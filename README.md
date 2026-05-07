@@ -1,6 +1,6 @@
 # MacPulse
 
-A tiny, native macOS menu bar app that shows your CPU, RAM, and network usage at a glance.
+A tiny, native macOS menu bar app that shows your CPU, RAM, network and disk usage at a glance.
 
 No Electron. No background daemon. Just a single Swift binary that sits quietly in the menu bar and gives you a live pulse of your machine.
 
@@ -11,13 +11,17 @@ No Electron. No background daemon. Just a single Swift binary that sits quietly 
 └─────────────────────────────┘
 ```
 
-Click the menu bar item to expand a popover with detailed breakdowns (user/system CPU, used/total memory, download/upload rates).
+**Left-click** the menu bar item to expand a popover with detailed breakdowns and 60-second
+sparkline charts for CPU and network. **Right-click** for the context menu (change update
+interval, quit).
 
 ## Features
 
-- **CPU usage** — total %, with user / system / idle breakdown
+- **CPU usage** — total %, with user / system / idle breakdown + 60-second history sparkline
 - **RAM usage** — % and `used / total` GB, computed the same way Activity Monitor does (active + wired + compressed)
-- **Network** — live download / upload rates across all physical interfaces (loopback, `utun`, `awdl`, `bridge`, etc. are excluded)
+- **Network** — live download / upload rates across all physical interfaces (loopback, `utun`, `awdl`, `bridge`, etc. are excluded) + sparkline
+- **Disk I/O** — read / write bytes per second across all `IOBlockStorageDriver` devices
+- **Configurable update interval** — 1.0 / 1.5 / 2.0 / 3.0 / 5.0 s, persisted to `UserDefaults`
 - **Native** — pure Swift + AppKit, no third-party dependencies
 - **Light** — single executable, no Electron, no helper processes
 - **Hidden from Dock** — runs as an `accessory` app (menu bar only)
@@ -40,7 +44,7 @@ The binary is ad-hoc signed (not notarized), so the first launch needs:
 ### Option 2 — Build from source
 
 ```bash
-git clone https://github.com/<your-handle>/MacPulse.git
+git clone https://github.com/daniel29348679/MacPulse.git
 cd MacPulse
 swift run -c release
 ```
@@ -76,8 +80,10 @@ open .build/release    # drag MacPulse from here into Login Items
 | CPU     | `host_statistics(HOST_CPU_LOAD_INFO)` — diff of user/system/idle ticks between samples |
 | RAM     | `host_statistics64(HOST_VM_INFO64)` — `(active + wired + compressed) × page_size`      |
 | Network | `getifaddrs()` + `if_data` — diff of `ifi_ibytes` / `ifi_obytes` between samples       |
+| Disk    | IOKit `IOBlockStorageDriver.Statistics` — diff of `Bytes (Read)` / `Bytes (Write)`     |
 
-Sampling interval: **1.5 seconds** (tunable in `StatusBarController.swift`).
+Default sampling interval: **1.5 seconds**. Change it from the right-click menu;
+the choice is persisted via `UserDefaults`.
 
 ## Project layout
 
@@ -87,22 +93,27 @@ MacPulse/
 └── Sources/MacPulse/
     ├── main.swift                  # NSApplication entry point
     ├── AppDelegate.swift
+    ├── Settings.swift              # UserDefaults-backed preferences
     ├── Monitors/
     │   ├── CPUMonitor.swift
     │   ├── MemoryMonitor.swift
     │   ├── NetworkMonitor.swift
+    │   ├── DiskMonitor.swift
     │   └── Formatter.swift
     └── UI/
-        ├── StatusBarController.swift   # NSStatusItem + sampling timer
-        └── StatsPopoverController.swift
+        ├── StatusBarController.swift   # NSStatusItem + sampling timer + context menu
+        ├── StatsPopoverController.swift
+        └── SparklineView.swift         # 60-sample rolling line chart
 ```
 
 ## Roadmap
 
+- [x] Disk I/O monitoring
+- [x] Sparkline charts in the popover
+- [x] Configurable update interval
 - [ ] GPU usage (Apple Silicon)
-- [ ] Disk I/O
-- [ ] Per-core CPU graph in the popover
-- [ ] Configurable update interval and visible metrics
+- [ ] Per-core CPU breakdown
+- [ ] Toggle which metrics show in the menu bar
 - [ ] Notarized `.app` bundle in releases
 
 PRs welcome.
