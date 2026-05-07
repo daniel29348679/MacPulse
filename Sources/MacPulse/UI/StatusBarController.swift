@@ -9,8 +9,16 @@ final class StatusBarController: NSObject {
     private let memory = MemoryMonitor()
     private let network = NetworkMonitor()
     private let disk = DiskMonitor()
+    private let temperature = TemperatureMonitor()
 
     private var timer: Timer?
+
+    // 暫存最後一次樣本，用於 popover 重新整理（即使該 metric 不在 menu bar）
+    private var lastCPU: CPUMonitor.Sample?
+    private var lastMemory: MemoryMonitor.Sample?
+    private var lastNetwork: NetworkMonitor.Sample?
+    private var lastDisk: DiskMonitor.Sample?
+    private var lastTemperature: TemperatureMonitor.Sample?
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -24,22 +32,24 @@ final class StatusBarController: NSObject {
 
         popover.behavior = .transient
         popover.contentViewController = popoverController
+        popoverController.onOpenSettings = { [weak self] in
+            self?.popover.performClose(nil)
+            self?.openSettings()
+        }
+        popoverController.onQuit = { NSApp.terminate(nil) }
 
-        // 立刻取一次基準樣本，避免第一次顯示是 0
+        // 第一次取基準
         _ = cpu.sample()
         _ = network.sample()
         _ = disk.sample()
 
-        render(cpuPercent: 0,
-               memPercent: memory.sample().usagePercent,
-               down: 0, up: 0)
-
+        renderEmpty()
         startTimer()
 
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(intervalChanged),
-            name: .macPulseIntervalChanged,
+            selector: #selector(settingsChanged),
+            name: .macPulseSettingsChanged,
             object: nil
         )
     }
@@ -61,50 +71,95 @@ final class StatusBarController: NSObject {
         self.timer = timer
     }
 
-    @objc private func intervalChanged() {
-        startTimer()
+    @objc private func settingsChanged() {
+        startTimer()           // interval 可能變了
+        popoverController.applyVisibility()
+        renderMenuBar()        // 用最後一次樣本重繪
     }
 
     private func tick() {
-        let cpuSample = cpu.sample()
-        let memSample = memory.sample()
-        let netSample = network.sample()
-        let diskSample = disk.sample()
+        lastCPU = cpu.sample()
+        lastMemory = memory.sample()
+        lastNetwork = network.sample()
+        lastDisk = disk.sample()
+        lastTemperature = temperature.sample()
 
-        render(cpuPercent: cpuSample.total,
-               memPercent: memSample.usagePercent,
-               down: netSample.downloadBytesPerSec,
-               up: netSample.uploadBytesPerSec)
-
-        popoverController.update(cpu: cpuSample,
-                                 memory: memSample,
-                                 network: netSample,
-                                 disk: diskSample)
+        renderMenuBar()
+        popoverController.update(cpu: lastCPU,
+                                 memory: lastMemory,
+                                 network: lastNetwork,
+                                 disk: lastDisk,
+                                 temperature: lastTemperature)
     }
 
-    // MARK: - Rendering
+    // MARK: - Menu bar rendering
 
-    private func render(cpuPercent: Double, memPercent: Double, down: Double, up: Double) {
+    private func renderEmpty() {
         guard let button = statusItem.button else { return }
+        button.title = ""
+        if let img = NSImage(systemSymbolName: "waveform.path.ecg",
+                             accessibilityDescription: "MacPulse") {
+            button.image = img.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        }
+    }
 
-        let topLine = String(format: "CPU %2.0f%%  RAM %2.0f%%", cpuPercent, memPercent)
-        let bottomLine = "↓ \(compactRate(down))  ↑ \(compactRate(up))"
+    private func renderMenuBar() {
+        guard let button = statusItem.button else { return }
+        let visible = Settings.shared.menuBarMetrics
+
+        if visible.isEmpty {
+            renderEmpty()
+            return
+        }
+        button.image = nil
+
+        // 上排：CPU / RAM / Temperature 這類「狀態指標」
+        var topParts: [String] = []
+        if visible.contains(.cpu), let s = lastCPU {
+            topParts.append(String(format: "CPU %2.0f%%", s.total))
+        }
+        if visible.contains(.memory), let s = lastMemory {
+            topParts.append(String(format: "RAM %2.0f%%", s.usagePercent))
+        }
+        if visible.contains(.temperature), let s = lastTemperature {
+            topParts.append(s.level.compactSymbol)
+        }
+
+        // 下排：Network / Disk 這類「速率」
+        var bottomParts: [String] = []
+        if visible.contains(.network), let s = lastNetwork {
+            bottomParts.append("↓ \(compactRate(s.downloadBytesPerSec))")
+            bottomParts.append("↑ \(compactRate(s.uploadBytesPerSec))")
+        }
+        if visible.contains(.disk), let s = lastDisk {
+            bottomParts.append("R \(compactRate(s.readBytesPerSec))")
+            bottomParts.append("W \(compactRate(s.writeBytesPerSec))")
+        }
+
+        let topLine = topParts.joined(separator: "  ")
+        let bottomLine = bottomParts.joined(separator: "  ")
+        let twoLines = !topLine.isEmpty && !bottomLine.isEmpty
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .right
-        paragraph.maximumLineHeight = 11
-        paragraph.minimumLineHeight = 11
+        if twoLines {
+            paragraph.maximumLineHeight = 11
+            paragraph.minimumLineHeight = 11
+        }
 
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: twoLines ? 10 : 12, weight: .medium),
             .paragraphStyle: paragraph,
             .foregroundColor: NSColor.labelColor
         ]
 
-        button.attributedTitle = NSAttributedString(
-            string: "\(topLine)\n\(bottomLine)",
-            attributes: attributes
-        )
+        let displayText: String
+        if twoLines {
+            displayText = "\(topLine)\n\(bottomLine)"
+        } else {
+            displayText = topLine.isEmpty ? bottomLine : topLine
+        }
+        button.attributedTitle = NSAttributedString(string: displayText, attributes: attributes)
     }
 
     private func compactRate(_ bps: Double) -> String {
@@ -144,6 +199,10 @@ final class StatusBarController: NSObject {
     private func showContextMenu() {
         let menu = NSMenu()
 
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+
         let intervalRoot = NSMenuItem(title: "Update Interval", action: nil, keyEquivalent: "")
         let intervalSubmenu = NSMenu()
         let current = Settings.shared.updateInterval
@@ -163,7 +222,7 @@ final class StatusBarController: NSObject {
 
         menu.addItem(.separator())
 
-        let about = NSMenuItem(title: "About MacPulse", action: #selector(openRepo), keyEquivalent: "")
+        let about = NSMenuItem(title: "View on GitHub", action: #selector(openRepo), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
 
@@ -173,7 +232,6 @@ final class StatusBarController: NSObject {
         quit.target = self
         menu.addItem(quit)
 
-        // 顯示後立刻重設 menu，否則下次左鍵點擊會誤觸 menu
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
@@ -182,6 +240,10 @@ final class StatusBarController: NSObject {
     @objc private func selectInterval(_ sender: NSMenuItem) {
         guard let interval = sender.representedObject as? TimeInterval else { return }
         Settings.shared.updateInterval = interval
+    }
+
+    @objc private func openSettings() {
+        SettingsWindowController.shared.show()
     }
 
     @objc private func openRepo() {

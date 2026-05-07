@@ -1,6 +1,6 @@
 # MacPulse
 
-A tiny, native macOS menu bar app that shows your CPU, RAM, network and disk usage at a glance.
+A tiny, native macOS menu bar app that shows your CPU, RAM, network, disk, and thermal state at a glance.
 
 No Electron. No background daemon. Just a single Swift binary that sits quietly in the menu bar and gives you a live pulse of your machine.
 
@@ -12,8 +12,9 @@ No Electron. No background daemon. Just a single Swift binary that sits quietly 
 ```
 
 **Left-click** the menu bar item to expand a popover with detailed breakdowns and 60-second
-sparkline charts for CPU and network. **Right-click** for the context menu (change update
-interval, quit).
+sparkline charts for CPU and network. **Right-click** for the context menu (settings, change
+update interval, quit). A dedicated **Settings window** lets you toggle which metrics appear
+in the menu bar and which appear in the popover.
 
 ## Features
 
@@ -21,6 +22,8 @@ interval, quit).
 - **RAM usage** — % and `used / total` GB, computed the same way Activity Monitor does (active + wired + compressed)
 - **Network** — live download / upload rates across all physical interfaces (loopback, `utun`, `awdl`, `bridge`, etc. are excluded) + sparkline
 - **Disk I/O** — read / write bytes per second across all `IOBlockStorageDriver` devices
+- **Thermal state** — Apple's official thermal-pressure level (Cool / Warm / Hot / Critical) with color-coded indicator
+- **Toggle each metric independently** in the menu bar and in the popover via the Settings window
 - **Configurable update interval** — 1.0 / 1.5 / 2.0 / 3.0 / 5.0 s, persisted to `UserDefaults`
 - **Native** — pure Swift + AppKit, no third-party dependencies
 - **Light** — single executable, no Electron, no helper processes
@@ -81,9 +84,15 @@ open .build/release    # drag MacPulse from here into Login Items
 | RAM     | `host_statistics64(HOST_VM_INFO64)` — `(active + wired + compressed) × page_size`      |
 | Network | `getifaddrs()` + `if_data` — diff of `ifi_ibytes` / `ifi_obytes` between samples       |
 | Disk    | IOKit `IOBlockStorageDriver.Statistics` — diff of `Bytes (Read)` / `Bytes (Write)`     |
+| Thermal | `ProcessInfo.processInfo.thermalState` — Apple's official 4-level pressure indicator   |
 
-Default sampling interval: **1.5 seconds**. Change it from the right-click menu;
-the choice is persisted via `UserDefaults`.
+> **Why no ºC?** Apple Silicon does not expose CPU/GPU temperature through any public API.
+> The SMC keys that worked on Intel Macs (`TC0P`, `TC0H`, …) are gone or rearranged on M-series
+> chips, and there's no documented replacement. `ProcessInfo.thermalState` is what Apple itself
+> recommends for reflecting "how hot is the system." It maps to **Cool / Warm / Hot / Critical**.
+
+Default sampling interval: **1.5 seconds**. Change it from the right-click menu or the
+Settings window; the choice is persisted via `UserDefaults`.
 
 ## Project layout
 
@@ -93,16 +102,18 @@ MacPulse/
 └── Sources/MacPulse/
     ├── main.swift                  # NSApplication entry point
     ├── AppDelegate.swift
-    ├── Settings.swift              # UserDefaults-backed preferences
+    ├── Settings.swift              # UserDefaults-backed preferences + Metric enum
     ├── Monitors/
     │   ├── CPUMonitor.swift
     │   ├── MemoryMonitor.swift
     │   ├── NetworkMonitor.swift
     │   ├── DiskMonitor.swift
+    │   ├── TemperatureMonitor.swift
     │   └── Formatter.swift
     └── UI/
         ├── StatusBarController.swift   # NSStatusItem + sampling timer + context menu
         ├── StatsPopoverController.swift
+        ├── SettingsWindowController.swift
         └── SparklineView.swift         # 60-sample rolling line chart
 ```
 
@@ -111,9 +122,10 @@ MacPulse/
 - [x] Disk I/O monitoring
 - [x] Sparkline charts in the popover
 - [x] Configurable update interval
+- [x] Toggle which metrics show in the menu bar / popover
+- [x] Thermal state indicator
 - [ ] GPU usage (Apple Silicon)
 - [ ] Per-core CPU breakdown
-- [ ] Toggle which metrics show in the menu bar
 - [ ] Notarized `.app` bundle in releases
 
 PRs welcome.
