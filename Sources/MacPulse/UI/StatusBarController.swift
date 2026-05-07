@@ -222,26 +222,62 @@ final class StatusBarController: NSObject {
         let bottomLine = bottomParts.joined(separator: "  ")
         let twoLines = !topLine.isEmpty && !bottomLine.isEmpty
 
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .right
-        if twoLines {
-            paragraph.maximumLineHeight = 11
-            paragraph.minimumLineHeight = 11
-        }
+        // NSStatusBarButton's attributedTitle path is hit-or-miss for vertical
+        // centering across font sizes — render to an NSImage ourselves so the
+        // glyphs sit exactly in the middle of the menu bar height.
+        button.title = ""
+        button.attributedTitle = NSAttributedString()
+        button.image = renderTitleImage(topLine: topLine, bottomLine: bottomLine, twoLines: twoLines)
+    }
 
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: twoLines ? 10 : 12, weight: .medium),
-            .paragraphStyle: paragraph,
-            .foregroundColor: NSColor.labelColor
+    private func renderTitleImage(topLine: String, bottomLine: String, twoLines: Bool) -> NSImage {
+        let fontSize: CGFloat = twoLines ? 10 : 12
+        let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .medium)
+        let lineHeight: CGFloat = twoLines ? 10.5 : 14
+        // Use the system's reported menu bar thickness — on stock macOS this is
+        // 22pt, but accessibility / external displays can change it.
+        let imageHeight: CGFloat = NSStatusBar.system.thickness
+
+        // Pure black + alpha so isTemplate = true lets the menu bar invert it
+        // for dark mode / selection state automatically.
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.black
         ]
 
-        let displayText: String
+        let lines: [NSAttributedString]
         if twoLines {
-            displayText = "\(topLine)\n\(bottomLine)"
+            lines = [NSAttributedString(string: topLine, attributes: attrs),
+                     NSAttributedString(string: bottomLine, attributes: attrs)]
         } else {
-            displayText = topLine.isEmpty ? bottomLine : topLine
+            let single = topLine.isEmpty ? bottomLine : topLine
+            lines = [NSAttributedString(string: single, attributes: attrs)]
         }
-        button.attributedTitle = NSAttributedString(string: displayText, attributes: attributes)
+
+        let widths = lines.map { $0.size().width }
+        let imageWidth = (widths.max() ?? 0).rounded(.up) + 4   // small right padding
+
+        let image = NSImage(size: NSSize(width: imageWidth, height: imageHeight))
+        image.lockFocusFlipped(false)
+        defer { image.unlockFocus() }
+
+        let totalTextHeight = CGFloat(lines.count) * lineHeight
+        // Optical centering: nudge down a hair because system fonts have a
+        // slightly heavier ascender than descender, which makes geometric
+        // centering look top-heavy.
+        let topY = (imageHeight - totalTextHeight) / 2 - 1
+
+        for (i, line) in lines.enumerated() {
+            let lineWidth = widths[i]
+            let x = imageWidth - lineWidth - 2   // right-align with 2 pt right margin
+            let y = topY + CGFloat(lines.count - 1 - i) * lineHeight
+            line.draw(at: NSPoint(x: x, y: y))
+        }
+
+        // template = true lets the menu bar invert the colors automatically
+        // when the menu bar is in dark mode / selected.
+        image.isTemplate = true
+        return image
     }
 
     private func compactRate(_ bps: Double) -> String {
