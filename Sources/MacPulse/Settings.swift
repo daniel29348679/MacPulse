@@ -33,6 +33,7 @@ final class Settings {
 
     private enum Keys {
         static let updateInterval     = "macpulse.updateInterval"
+        static let sparklineWindow    = "macpulse.sparkline.window"    // seconds
         static let menuBarVisible     = "macpulse.menuBar.visible"     // [Metric.rawValue]
         static let popoverVisible     = "macpulse.popover.visible"     // [Metric.rawValue]
     }
@@ -40,12 +41,20 @@ final class Settings {
     static let allowedIntervals: [TimeInterval] = [0.5, 1.0, 3.0, 5.0, 10.0]
     static let defaultInterval: TimeInterval = 1.0
 
+    static let allowedSparklineWindows: [TimeInterval] = [30, 60, 120, 300, 600]
+    static let defaultSparklineWindow: TimeInterval = 60
+
     /// 給 UI 用的字串標籤（整數秒不顯示小數）
     static func intervalLabel(_ interval: TimeInterval) -> String {
         if interval.truncatingRemainder(dividingBy: 1) == 0 {
             return "\(Int(interval))s"
         }
         return String(format: "%.1fs", interval)
+    }
+
+    static func sparklineWindowLabel(_ seconds: TimeInterval) -> String {
+        if seconds < 60 { return "\(Int(seconds))s" }
+        return "\(Int(seconds) / 60)m"
     }
 
     /// 採樣間隔（秒）
@@ -59,6 +68,25 @@ final class Settings {
             defaults.set(newValue, forKey: Keys.updateInterval)
             NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)
         }
+    }
+
+    /// 折線圖時間長度（秒）— sparkline capacity = ceil(window / updateInterval)
+    var sparklineWindowSeconds: TimeInterval {
+        get {
+            let stored = defaults.double(forKey: Keys.sparklineWindow)
+            return Self.allowedSparklineWindows.contains(stored) ? stored : Self.defaultSparklineWindow
+        }
+        set {
+            guard Self.allowedSparklineWindows.contains(newValue) else { return }
+            defaults.set(newValue, forKey: Keys.sparklineWindow)
+            NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)
+        }
+    }
+
+    /// 依目前 updateInterval / sparklineWindowSeconds 計算 buffer 容量
+    var sparklineCapacity: Int {
+        let interval = max(updateInterval, 0.001)
+        return max(2, Int(ceil(sparklineWindowSeconds / interval)))
     }
 
     /// 在選單列要顯示哪些指標

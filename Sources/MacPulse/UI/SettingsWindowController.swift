@@ -7,10 +7,28 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var menuBarCheckboxes: [Metric: NSButton] = [:]
     private var popoverCheckboxes: [Metric: NSButton] = [:]
     private var intervalSegment: NSSegmentedControl!
+    private var sparklineWindowSegment: NSSegmentedControl!
+    private var launchAtLoginCheckbox: NSButton!
+
+    // Update UI
+    private var updateButton: NSButton!
+    private var updateStatusLabel: NSTextField!
+    private var pendingRelease: Updater.Release?
+    private enum UpdateUIState {
+        case idle
+        case checking
+        case upToDate
+        case available(Updater.Release)
+        case installing
+        case error(String)
+    }
+    private var updateState: UpdateUIState = .idle {
+        didSet { applyUpdateState() }
+    }
 
     private convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 600),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -56,6 +74,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         intervalSegment.segmentStyle = .rounded
         intervalSegment.translatesAutoresizingMaskIntoConstraints = false
 
+        // Sparkline window
+        let sparklineLabel = sectionTitle("CHART HISTORY WINDOW")
+        let sparkLabels = Settings.allowedSparklineWindows.map(Settings.sparklineWindowLabel)
+        sparklineWindowSegment = NSSegmentedControl(labels: sparkLabels,
+                                                    trackingMode: .selectOne,
+                                                    target: self,
+                                                    action: #selector(sparklineWindowChanged(_:)))
+        sparklineWindowSegment.segmentStyle = .rounded
+        sparklineWindowSegment.translatesAutoresizingMaskIntoConstraints = false
+
         // Menu bar metrics
         let menuBarLabel = sectionTitle("SHOW IN MENU BAR")
         let menuBarStack = NSStackView()
@@ -89,6 +117,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         twoColumns.distribution = .fillEqually
         twoColumns.spacing = 24
 
+        // Startup
+        let startupLabel = sectionTitle("STARTUP")
+        launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch MacPulse at login",
+                                         target: self,
+                                         action: #selector(launchAtLoginToggled(_:)))
+
+        // Updates
+        let updatesLabel = sectionTitle("UPDATES")
+        updateButton = NSButton(title: "Check for Updates", target: self, action: #selector(updateButtonClicked))
+        updateButton.bezelStyle = .rounded
+        updateStatusLabel = NSTextField(labelWithString: "")
+        updateStatusLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        updateStatusLabel.textColor = .secondaryLabelColor
+        updateStatusLabel.lineBreakMode = .byWordWrapping
+        updateStatusLabel.maximumNumberOfLines = 2
+
+        let updateRow = NSStackView(views: [updateButton, updateStatusLabel])
+        updateRow.orientation = .horizontal
+        updateRow.alignment = .centerY
+        updateRow.spacing = 10
+
         // Footer
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         let versionLabel = NSTextField(labelWithString: "v\(version) · MIT License")
@@ -109,8 +158,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             titleStack,
             divider(),
             wrap(label: intervalLabel, content: intervalSegment),
+            wrap(label: sparklineLabel, content: sparklineWindowSegment),
             divider(),
             twoColumns,
+            divider(),
+            wrap(label: startupLabel, content: launchAtLoginCheckbox),
+            wrap(label: updatesLabel, content: updateRow),
             divider(),
             footer
         ])
@@ -120,7 +173,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         mainStack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
         mainStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 460))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 600))
         container.addSubview(mainStack)
         NSLayoutConstraint.activate([
             mainStack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -128,6 +181,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             mainStack.topAnchor.constraint(equalTo: container.topAnchor),
             mainStack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             intervalSegment.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48),
+            sparklineWindowSegment.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48),
             footer.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48)
         ])
         return container
@@ -173,6 +227,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         Settings.shared.updateInterval = Settings.allowedIntervals[idx]
     }
 
+    @objc private func sparklineWindowChanged(_ sender: NSSegmentedControl) {
+        let idx = sender.selectedSegment
+        guard idx >= 0, idx < Settings.allowedSparklineWindows.count else { return }
+        Settings.shared.sparklineWindowSeconds = Settings.allowedSparklineWindows[idx]
+    }
+
     @objc private func menuBarToggled(_ sender: NSButton) {
         guard let raw = sender.identifier?.rawValue, let metric = Metric(rawValue: raw) else { return }
         Settings.shared.toggleMenuBar(metric)
@@ -183,9 +243,114 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         Settings.shared.togglePopover(metric)
     }
 
+    @objc private func launchAtLoginToggled(_ sender: NSButton) {
+        let wantOn = sender.state == .on
+        do {
+            try LoginItem.setEnabled(wantOn)
+        } catch {
+            // 還原 UI
+            sender.state = LoginItem.isEnabled ? .on : .off
+            presentError(error, title: "Could not change login item")
+        }
+    }
+
     @objc private func openRepo() {
         if let url = URL(string: "https://github.com/daniel29348679/MacPulse") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func updateButtonClicked() {
+        switch updateState {
+        case .idle, .upToDate, .error:
+            checkForUpdates()
+        case .available(let release):
+            installUpdate(release)
+        case .checking, .installing:
+            break
+        }
+    }
+
+    private func checkForUpdates() {
+        updateState = .checking
+        Updater.fetchLatestRelease { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let release):
+                if Updater.isNewer(release.version, than: Updater.currentVersion()) {
+                    self.pendingRelease = release
+                    self.updateState = .available(release)
+                } else {
+                    self.updateState = .upToDate
+                }
+            case .failure(let error):
+                self.updateState = .error(error.localizedDescription)
+            }
+        }
+    }
+
+    private func installUpdate(_ release: Updater.Release) {
+        guard Updater.isInstallable else {
+            // 開發環境跑：開瀏覽器引導使用者下載
+            NSWorkspace.shared.open(release.pageURL)
+            updateState = .error("Run the bundled MacPulse.app to auto-update. Opening release page instead.")
+            return
+        }
+        updateState = .installing
+        Updater.downloadAndInstall(release: release) { [weak self] result in
+            guard let self else { return }
+            if case .failure(let err) = result {
+                self.updateState = .error(err.localizedDescription)
+            }
+            // 成功時 Updater 自己會 NSApp.terminate，不會走到這。
+        }
+    }
+
+    private func applyUpdateState() {
+        switch updateState {
+        case .idle:
+            updateButton.title = "Check for Updates"
+            updateButton.isEnabled = true
+            updateStatusLabel.stringValue = ""
+            updateStatusLabel.textColor = .secondaryLabelColor
+        case .checking:
+            updateButton.title = "Checking…"
+            updateButton.isEnabled = false
+            updateStatusLabel.stringValue = "Contacting GitHub…"
+            updateStatusLabel.textColor = .secondaryLabelColor
+        case .upToDate:
+            updateButton.title = "Check for Updates"
+            updateButton.isEnabled = true
+            updateStatusLabel.stringValue = "You're on the latest version (v\(Updater.currentVersion()))."
+            updateStatusLabel.textColor = .secondaryLabelColor
+        case .available(let release):
+            updateButton.title = "Download & Install v\(release.version)"
+            updateButton.isEnabled = true
+            updateStatusLabel.stringValue = "v\(release.version) is available (currently v\(Updater.currentVersion()))."
+            updateStatusLabel.textColor = .controlAccentColor
+        case .installing:
+            updateButton.title = "Installing…"
+            updateButton.isEnabled = false
+            updateStatusLabel.stringValue = "Downloading and replacing app — MacPulse will relaunch."
+            updateStatusLabel.textColor = .secondaryLabelColor
+        case .error(let msg):
+            updateButton.title = "Check for Updates"
+            updateButton.isEnabled = true
+            updateStatusLabel.stringValue = msg
+            updateStatusLabel.textColor = .systemRed
+        }
+    }
+
+    private func presentError(_ error: Error, title: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: nil)
+        } else {
+            alert.runModal()
         }
     }
 
@@ -196,6 +361,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         if let idx = Settings.allowedIntervals.firstIndex(of: interval) {
             intervalSegment.selectedSegment = idx
         }
+        let window = Settings.shared.sparklineWindowSeconds
+        if let idx = Settings.allowedSparklineWindows.firstIndex(of: window) {
+            sparklineWindowSegment.selectedSegment = idx
+        }
+
         let menuBar = Settings.shared.menuBarMetrics
         let popover = Settings.shared.popoverMetrics
         for (metric, cb) in menuBarCheckboxes {
@@ -204,6 +374,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         for (metric, cb) in popoverCheckboxes {
             cb.state = popover.contains(metric) ? .on : .off
         }
+
+        // Login item
+        if LoginItem.isSupported {
+            launchAtLoginCheckbox.isEnabled = true
+            launchAtLoginCheckbox.state = LoginItem.isEnabled ? .on : .off
+            launchAtLoginCheckbox.toolTip = nil
+        } else {
+            launchAtLoginCheckbox.isEnabled = false
+            launchAtLoginCheckbox.state = .off
+            launchAtLoginCheckbox.toolTip = "Only available when MacPulse is run from a .app bundle (e.g. /Applications)."
+        }
+
+        // 重置 update UI 但保留剛才檢查到的結果（如果使用者只是切換到別頁再回來的話）
+        applyUpdateState()
     }
 
     func windowWillClose(_ notification: Notification) {

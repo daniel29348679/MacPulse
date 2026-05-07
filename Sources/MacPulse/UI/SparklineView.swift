@@ -13,6 +13,17 @@ final class SparklineView: NSView {
     private(set) var capacity: Int
     private var samples: [Double] = []
 
+    /// 改變 buffer 容量；若舊資料比新容量多會丟掉最舊的樣本。
+    func setCapacity(_ newCapacity: Int) {
+        let n = max(2, newCapacity)
+        guard n != capacity else { return }
+        capacity = n
+        if samples.count > n {
+            samples.removeFirst(samples.count - n)
+        }
+        needsDisplay = true
+    }
+
     init(capacity: Int = 60, frame: NSRect = .zero) {
         self.capacity = capacity
         super.init(frame: frame)

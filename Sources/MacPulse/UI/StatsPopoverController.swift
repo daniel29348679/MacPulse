@@ -14,6 +14,7 @@ final class StatsPopoverController: NSViewController {
     // Memory
     private let memValueLabel = StatsPopoverController.makeValueLabel()
     private let memBreakdown = StatsPopoverController.makeSecondaryLabel()
+    private let memSparkline = SparklineView(capacity: 60)
 
     // Network
     private let downLabel = StatsPopoverController.makeRateLabel()
@@ -73,8 +74,13 @@ final class StatsPopoverController: NSViewController {
         sections[.cpu] = cpuSection
 
         // Memory
+        memSparkline.fixedMaxValue = 100
+        memSparkline.lineColor = .systemPurple
+        memSparkline.fillColor = NSColor.systemPurple.withAlphaComponent(0.18)
+        memSparkline.heightAnchor.constraint(equalToConstant: 30).isActive = true
+
         let memRow = headerRow(metric: .memory, valueView: memValueLabel)
-        let memSection = stack([memRow, memBreakdown], spacing: 4)
+        let memSection = stack([memRow, memBreakdown, memSparkline], spacing: 4)
         sections[.memory] = memSection
 
         // Network
@@ -150,8 +156,17 @@ final class StatsPopoverController: NSViewController {
         }
 
         applyVisibility()
+        applySparklineCapacity()
         self.view = container
         adjustPreferredSize()
+    }
+
+    /// 依設定（採樣間隔 / 折線時間長度）調整每條 sparkline 的 buffer 容量
+    func applySparklineCapacity() {
+        let cap = Settings.shared.sparklineCapacity
+        cpuSparkline.setCapacity(cap)
+        memSparkline.setCapacity(cap)
+        netSparkline.setCapacity(cap)
     }
 
     func applyVisibility() {
@@ -193,6 +208,7 @@ final class StatsPopoverController: NSViewController {
         if let memory {
             memValueLabel.stringValue = String(format: "%.1f %%", memory.usagePercent)
             memBreakdown.stringValue = "\(ByteFormatter.size(memory.usedBytes)) / \(ByteFormatter.size(memory.totalBytes))"
+            memSparkline.append(memory.usagePercent)
         }
 
         if let network {

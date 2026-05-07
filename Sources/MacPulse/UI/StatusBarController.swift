@@ -74,6 +74,7 @@ final class StatusBarController: NSObject {
     @objc private func settingsChanged() {
         startTimer()           // interval 可能變了
         popoverController.applyVisibility()
+        popoverController.applySparklineCapacity()
         renderMenuBar()        // 用最後一次樣本重繪
     }
 
