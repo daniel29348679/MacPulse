@@ -91,16 +91,14 @@ enum Screenshots {
             return max(0, base + burst)
         }
 
-        // Push samples through the public update() path so the charts pick them up.
         for i in 0..<cpuCurve.count {
-            popover.update(
+            popover.appendSamples(
                 cpu: CPUMonitor.Sample(user: cpuCurve[i] * 0.7, system: cpuCurve[i] * 0.3,
                                        idle: 100 - cpuCurve[i]),
                 memory: MemoryMonitor.Sample(usedBytes: UInt64(memCurve[i] / 100 * 16 * 1024 * 1024 * 1024),
                                              totalBytes: UInt64(16 * 1024 * 1024 * 1024)),
                 network: NetworkMonitor.Sample(downloadBytesPerSec: netCurve[i],
-                                               uploadBytesPerSec: netCurve[i] * 0.2),
-                disk: nil, temperature: nil, power: nil
+                                               uploadBytesPerSec: netCurve[i] * 0.2)
             )
         }
     }

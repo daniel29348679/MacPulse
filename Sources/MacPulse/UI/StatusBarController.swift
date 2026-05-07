@@ -13,6 +13,7 @@ final class StatusBarController: NSObject {
     private let power = PowerMonitor()
 
     private var timer: Timer?
+    private var screenAsleep = false
 
     // 暫存最後一次樣本，用於 popover 重新整理（即使該 metric 不在 menu bar）
     private var lastCPU: CPUMonitor.Sample?
@@ -54,23 +55,59 @@ final class StatusBarController: NSObject {
             name: .macPulseSettingsChanged,
             object: nil
         )
+
+        // Restart the timer when the user toggles Low Power Mode so the
+        // throttled interval (effectiveInterval()) takes effect immediately.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(powerStateChanged),
+            name: NSNotification.Name.NSProcessInfoPowerStateDidChange,
+            object: nil
+        )
+
+        // Pause sampling entirely while the display is asleep — the user
+        // can't see the menu bar, and waking the CPU once a second just to
+        // recompute invisible numbers is the single biggest battery cost
+        // a status-bar app like this can rack up overnight.
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(self, selector: #selector(screensWillSleep),
+                              name: NSWorkspace.screensDidSleepNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(screensDidWake),
+                              name: NSWorkspace.screensDidWakeNotification, object: nil)
     }
 
     deinit {
         timer?.invalidate()
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     // MARK: - Sampling
 
     private func startTimer() {
         timer?.invalidate()
-        let interval = Settings.shared.updateInterval
+        guard !screenAsleep else { return }   // resume() runs startTimer() again on wake.
+        let interval = effectiveInterval()
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        // Letting the OS slip the fire time by ±10% lets it coalesce our wakeup
+        // with other scheduled work — the single biggest power win for a 1-Hz
+        // status bar app, since idle wakeups dominate "Energy Impact" in
+        // Activity Monitor far more than CPU%.
+        timer.tolerance = interval * 0.1
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+    }
+
+    /// Configured interval, throttled to ≥5 s in Low Power Mode so the user's
+    /// explicit "save battery" choice is honoured even if MacPulse is set to 1 s.
+    private func effectiveInterval() -> TimeInterval {
+        let configured = Settings.shared.updateInterval
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            return max(configured, 5.0)
+        }
+        return configured
     }
 
     @objc private func settingsChanged() {
@@ -78,6 +115,25 @@ final class StatusBarController: NSObject {
         popoverController.applyVisibility()
         popoverController.applySparklineCapacity()
         renderMenuBar()        // 用最後一次樣本重繪
+    }
+
+    @objc private func powerStateChanged() {
+        // Posted on a background queue — bounce to main before touching the timer.
+        DispatchQueue.main.async { [weak self] in self?.startTimer() }
+    }
+
+    @objc private func screensWillSleep() {
+        screenAsleep = true
+        timer?.invalidate()
+        timer = nil
+    }
+
+    @objc private func screensDidWake() {
+        screenAsleep = false
+        // Immediate sample so the menu bar doesn't show stale numbers from
+        // before sleep while the user waits up to `interval` for the timer.
+        tick()
+        startTimer()
     }
 
     private func tick() {
@@ -89,12 +145,22 @@ final class StatusBarController: NSObject {
         lastPower = power.sample()
 
         renderMenuBar()
-        popoverController.update(cpu: lastCPU,
-                                 memory: lastMemory,
-                                 network: lastNetwork,
-                                 disk: lastDisk,
-                                 temperature: lastTemperature,
-                                 power: lastPower)
+
+        // Always feed sparkline buffers (so opening the popover later shows
+        // a populated chart), but skip the relatively expensive text-label
+        // updates while the popover is hidden.
+        let popoverShown = popover.isShown
+        popoverController.appendSamples(cpu: lastCPU,
+                                        memory: lastMemory,
+                                        network: lastNetwork)
+        if popoverShown {
+            popoverController.update(cpu: lastCPU,
+                                     memory: lastMemory,
+                                     network: lastNetwork,
+                                     disk: lastDisk,
+                                     temperature: lastTemperature,
+                                     power: lastPower)
+        }
     }
 
     // MARK: - Menu bar rendering
@@ -207,6 +273,14 @@ final class StatusBarController: NSObject {
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            // Refresh text labels with the most recent cached samples before
+            // showing — tick() skips this work while the popover is hidden.
+            popoverController.update(cpu: lastCPU,
+                                     memory: lastMemory,
+                                     network: lastNetwork,
+                                     disk: lastDisk,
+                                     temperature: lastTemperature,
+                                     power: lastPower)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

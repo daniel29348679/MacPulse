@@ -201,6 +201,16 @@ final class StatsPopoverController: NSViewController {
 
     // MARK: - Sample updates
 
+    /// Cheap path: only feeds sparkline buffers so opening the popover later
+    /// shows fresh history. Called every tick regardless of popover visibility.
+    func appendSamples(cpu: CPUMonitor.Sample?,
+                       memory: MemoryMonitor.Sample?,
+                       network: NetworkMonitor.Sample?) {
+        if let cpu     { cpuSparkline.append(cpu.total) }
+        if let memory  { memSparkline.append(memory.usagePercent) }
+        if let network { netSparkline.append(network.downloadBytesPerSec + network.uploadBytesPerSec) }
+    }
+
     func update(cpu: CPUMonitor.Sample?,
                 memory: MemoryMonitor.Sample?,
                 network: NetworkMonitor.Sample?,
@@ -212,19 +222,16 @@ final class StatsPopoverController: NSViewController {
             cpuValueLabel.stringValue = String(format: "%.1f %%", cpu.total)
             cpuBreakdown.stringValue = String(format: "user %.1f · system %.1f · idle %.1f",
                                               cpu.user, cpu.system, cpu.idle)
-            cpuSparkline.append(cpu.total)
         }
 
         if let memory {
             memValueLabel.stringValue = String(format: "%.1f %%", memory.usagePercent)
             memBreakdown.stringValue = "\(ByteFormatter.size(memory.usedBytes)) / \(ByteFormatter.size(memory.totalBytes))"
-            memSparkline.append(memory.usagePercent)
         }
 
         if let network {
             downLabel.stringValue = ByteFormatter.rate(network.downloadBytesPerSec)
             upLabel.stringValue   = ByteFormatter.rate(network.uploadBytesPerSec)
-            netSparkline.append(network.downloadBytesPerSec + network.uploadBytesPerSec)
         }
 
         if let disk {

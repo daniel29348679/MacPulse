@@ -35,6 +35,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         window.title = "MacPulse Settings"
         window.isReleasedWhenClosed = false
+        // Always surface on the user's current Space, not the one where the
+        // window was last shown — important for menu-bar apps where the user
+        // expects "Settings" to follow them across desktops.
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.center()
 
         self.init(window: window)

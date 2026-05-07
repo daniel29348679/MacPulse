@@ -15,6 +15,5 @@ DerivedData/
 # Local .app bundles (rebuild via scripts/build-app.sh)
 MacPulse.app/
 
-# Icon master PNG — regenerate with scripts/make-icon.swift
-Resources/AppIcon-1024.png
+# Intermediate iconset directory — produced and consumed by scripts/make-icon.sh
 Resources/AppIcon.iconset/
