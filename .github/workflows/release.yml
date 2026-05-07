@@ -1,0 +1,90 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build .app and publish release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build (release, universal)
+        run: |
+          swift build -c release \
+            --arch arm64 \
+            --arch x86_64
+
+      - name: Assemble MacPulse.app
+        run: |
+          set -euo pipefail
+          APP="MacPulse.app"
+          BIN_PATH="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN_PATH/MacPulse" "$APP/Contents/MacOS/MacPulse"
+          chmod +x "$APP/Contents/MacOS/MacPulse"
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>MacPulse</string>
+              <key>CFBundleIdentifier</key>
+              <string>app.macpulse.MacPulse</string>
+              <key>CFBundleName</key>
+              <string>MacPulse</string>
+              <key>CFBundleDisplayName</key>
+              <string>MacPulse</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>13.0</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Ad-hoc sign (unsigned binaries are blocked by Gatekeeper)
+        run: codesign --force --deep --sign - MacPulse.app
+
+      - name: Zip
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent MacPulse.app MacPulse-${GITHUB_REF_NAME}.zip
+          shasum -a 256 MacPulse-${GITHUB_REF_NAME}.zip > MacPulse-${GITHUB_REF_NAME}.zip.sha256
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            MacPulse-*.zip
+            MacPulse-*.zip.sha256
+          generate_release_notes: true
+          body: |
+            ## MacPulse ${{ github.ref_name }}
+
+            Universal binary (arm64 + x86_64), ad-hoc signed.
+
+            ### Install
+            1. Download `MacPulse-${{ github.ref_name }}.zip`
+            2. Unzip and move `MacPulse.app` to `/Applications`
+            3. First launch: right-click → **Open** (Gatekeeper warns about unsigned apps)
+
+            See attached `.sha256` for the checksum.

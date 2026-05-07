@@ -27,7 +27,17 @@ Click the menu bar item to expand a popover with detailed breakdowns (user/syste
 - macOS 13 (Ventura) or newer
 - Swift 5.9+ toolchain (ships with Xcode 15 or the standalone Command Line Tools)
 
-## Install & run
+## Install
+
+### Option 1 — Download the prebuilt `.app` (easiest)
+
+Grab the latest `MacPulse-vX.Y.Z.zip` from the [Releases page](../../releases),
+unzip, and drag `MacPulse.app` into `/Applications`.
+
+The binary is ad-hoc signed (not notarized), so the first launch needs:
+**right-click `MacPulse.app` → Open → Open**.
+
+### Option 2 — Build from source
 
 ```bash
 git clone https://github.com/<your-handle>/MacPulse.git
