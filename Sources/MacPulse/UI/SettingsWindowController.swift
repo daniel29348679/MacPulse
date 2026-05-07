@@ -51,7 +51,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         // 更新間隔
         let intervalLabel = sectionTitle("UPDATE INTERVAL")
-        let labels = Settings.allowedIntervals.map { String(format: "%.1fs", $0) }
+        let labels = Settings.allowedIntervals.map(Settings.intervalLabel)
         intervalSegment = NSSegmentedControl(labels: labels, trackingMode: .selectOne, target: self, action: #selector(intervalChanged(_:)))
         intervalSegment.segmentStyle = .rounded
         intervalSegment.translatesAutoresizingMaskIntoConstraints = false

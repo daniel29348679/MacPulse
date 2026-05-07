@@ -1,10 +1,8 @@
 import AppKit
 import Foundation
 
-/// macOS 沒有公開 API 可在 Apple Silicon 上讀取真實 ºC（SMC key 各代不同且不穩定）。
-/// 我們改用 ProcessInfo.processInfo.thermalState — 這是 Apple 官方建議的「熱壓力」指標，
-/// 共四級：nominal / fair / serious / critical。
 final class TemperatureMonitor {
+
     enum Level: String {
         case nominal, fair, serious, critical
 
@@ -17,7 +15,6 @@ final class TemperatureMonitor {
             }
         }
 
-        /// 給狀態列用的緊湊符號（emoji 在等寬字型下也能對齊）
         var compactSymbol: String {
             switch self {
             case .nominal:  return "❄"
@@ -35,19 +32,37 @@ final class TemperatureMonitor {
             case .critical: return .systemRed
             }
         }
+
+        /// 由 °C 推測等級。閾值參考 Apple Silicon 一般情境（大約值，不同晶片會有差距）。
+        static func from(celsius: Double) -> Level {
+            switch celsius {
+            case ..<55:   return .nominal
+            case ..<70:   return .fair
+            case ..<85:   return .serious
+            default:      return .critical
+            }
+        }
     }
 
     struct Sample {
+        /// 直接讀到的 CPU 溫度（°C）；若 IOHID 沒回任何感測器則為 nil（退回 thermalState）
+        let celsius: Double?
         let level: Level
     }
 
     func sample() -> Sample {
-        switch ProcessInfo.processInfo.thermalState {
-        case .nominal:  return Sample(level: .nominal)
-        case .fair:     return Sample(level: .fair)
-        case .serious:  return Sample(level: .serious)
-        case .critical: return Sample(level: .critical)
-        @unknown default: return Sample(level: .nominal)
+        if let temp = TemperatureSensors.cpuCelsius() {
+            return Sample(celsius: temp, level: Level.from(celsius: temp))
         }
+        // Fallback：拿不到就用 ProcessInfo 的 4 級熱壓力
+        let level: Level
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal:  level = .nominal
+        case .fair:     level = .fair
+        case .serious:  level = .serious
+        case .critical: level = .critical
+        @unknown default: level = .nominal
+        }
+        return Sample(celsius: nil, level: level)
     }
 }

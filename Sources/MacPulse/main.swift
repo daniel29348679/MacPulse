@@ -1,5 +1,22 @@
 import AppKit
 
+// 偵錯：列出所有 HID 溫度感測器並結束
+if CommandLine.arguments.contains("--dump-sensors") {
+    let readings = TemperatureSensors.read()
+    if readings.isEmpty {
+        print("(no temperature sensors readable via IOHID)")
+    } else {
+        for r in readings.sorted(by: { $0.celsius > $1.celsius }) {
+            let name = r.name.padding(toLength: 42, withPad: " ", startingAt: 0)
+            print("\(name)\(String(format: "%6.1f °C", r.celsius))")
+        }
+        if let cpu = TemperatureSensors.cpuCelsius() {
+            print(String(format: "\nCPU estimate: %.1f °C", cpu))
+        }
+    }
+    exit(0)
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

@@ -5,10 +5,10 @@ A tiny, native macOS menu bar app that shows your CPU, RAM, network, disk, and t
 No Electron. No background daemon. Just a single Swift binary that sits quietly in the menu bar and gives you a live pulse of your machine.
 
 ```
-┌─────────────────────────────┐
-│ … CPU 12%  RAM 47%          │
-│   ↓ 1.2M  ↑ 234K            │
-└─────────────────────────────┘
+┌─────────────────────────────────┐
+│ … CPU 12%  RAM 47%  37°         │
+│   ↓ 1.2M  ↑ 234K                │
+└─────────────────────────────────┘
 ```
 
 **Left-click** the menu bar item to expand a popover with detailed breakdowns and 60-second
@@ -22,9 +22,9 @@ in the menu bar and which appear in the popover.
 - **RAM usage** — % and `used / total` GB, computed the same way Activity Monitor does (active + wired + compressed)
 - **Network** — live download / upload rates across all physical interfaces (loopback, `utun`, `awdl`, `bridge`, etc. are excluded) + sparkline
 - **Disk I/O** — read / write bytes per second across all `IOBlockStorageDriver` devices
-- **Thermal state** — Apple's official thermal-pressure level (Cool / Warm / Hot / Critical) with color-coded indicator
+- **CPU temperature** — actual °C reading from on-die thermal sensors (Apple Silicon `PMU tdie*` / Intel `TC0P`); falls back to Apple's thermal-pressure level if sensors are unreadable
 - **Toggle each metric independently** in the menu bar and in the popover via the Settings window
-- **Configurable update interval** — 1.0 / 1.5 / 2.0 / 3.0 / 5.0 s, persisted to `UserDefaults`
+- **Configurable update interval** — 0.5 / 1 / 3 / 5 / 10 s, persisted to `UserDefaults`
 - **Native** — pure Swift + AppKit, no third-party dependencies
 - **Light** — single executable, no Electron, no helper processes
 - **Hidden from Dock** — runs as an `accessory` app (menu bar only)
@@ -84,15 +84,21 @@ open .build/release    # drag MacPulse from here into Login Items
 | RAM     | `host_statistics64(HOST_VM_INFO64)` — `(active + wired + compressed) × page_size`      |
 | Network | `getifaddrs()` + `if_data` — diff of `ifi_ibytes` / `ifi_obytes` between samples       |
 | Disk    | IOKit `IOBlockStorageDriver.Statistics` — diff of `Bytes (Read)` / `Bytes (Write)`     |
-| Thermal | `ProcessInfo.processInfo.thermalState` — Apple's official 4-level pressure indicator   |
+| Temp    | `IOHIDEventSystemClient` — enumerate `kHIDPage_AppleVendor / TemperatureSensor` services and read `kIOHIDEventTypeTemperature` |
 
-> **Why no ºC?** Apple Silicon does not expose CPU/GPU temperature through any public API.
-> The SMC keys that worked on Intel Macs (`TC0P`, `TC0H`, …) are gone or rearranged on M-series
-> chips, and there's no documented replacement. `ProcessInfo.thermalState` is what Apple itself
-> recommends for reflecting "how hot is the system." It maps to **Cool / Warm / Hot / Critical**.
+> **About the temperature reading.** Apple does not expose CPU °C through any public API.
+> We use `IOHIDEventSystemClient` (private but linkable from `IOKit.framework`) to enumerate
+> all HID temperature sensors. On Apple Silicon, names like `PMU tdie0`–`PMU tdie14` are the
+> on-die sensors, and we report the maximum value across them as "CPU temperature." This is
+> the same trick the popular open-source [Stats](https://github.com/exelban/stats) app uses.
+> It works without entitlements, but uses unpublished symbols, so a future macOS release
+> *could* break it. When it does, the app falls back to `ProcessInfo.processInfo.thermalState`
+> (Cool / Warm / Hot / Critical), which is the only public API for thermal info.
+>
+> Run `./MacPulse --dump-sensors` to print every readable sensor and the chosen CPU estimate.
 
-Default sampling interval: **1.5 seconds**. Change it from the right-click menu or the
-Settings window; the choice is persisted via `UserDefaults`.
+Default sampling interval: **1 second**. Change it from the right-click menu or the
+Settings window; allowed values are 0.5 / 1 / 3 / 5 / 10 s, persisted via `UserDefaults`.
 
 ## Project layout
 
@@ -108,7 +114,8 @@ MacPulse/
     │   ├── MemoryMonitor.swift
     │   ├── NetworkMonitor.swift
     │   ├── DiskMonitor.swift
-    │   ├── TemperatureMonitor.swift
+    │   ├── TemperatureMonitor.swift     # thermalState + °C wrapper
+    │   ├── TemperatureSensors.swift     # IOHIDEventSystemClient bridge
     │   └── Formatter.swift
     └── UI/
         ├── StatusBarController.swift   # NSStatusItem + sampling timer + context menu
@@ -124,6 +131,7 @@ MacPulse/
 - [x] Configurable update interval
 - [x] Toggle which metrics show in the menu bar / popover
 - [x] Thermal state indicator
+- [x] On-die °C temperature reading
 - [ ] GPU usage (Apple Silicon)
 - [ ] Per-core CPU breakdown
 - [ ] Notarized `.app` bundle in releases

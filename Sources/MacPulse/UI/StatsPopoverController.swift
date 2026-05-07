@@ -26,6 +26,7 @@ final class StatsPopoverController: NSViewController {
 
     // Temperature
     private let tempLabel = StatsPopoverController.makeValueLabel()
+    private let tempBreakdown = StatsPopoverController.makeSecondaryLabel()
     private let tempDot = ColorDotView()
 
     // Footer
@@ -111,7 +112,7 @@ final class StatsPopoverController: NSViewController {
         tempValueRow.alignment = .centerY
 
         let tempHeader = headerRow(metric: .temperature, valueView: tempValueRow)
-        let tempSection = stack([tempHeader], spacing: 0)
+        let tempSection = stack([tempHeader, tempBreakdown], spacing: 4)
         sections[.temperature] = tempSection
 
         // Compose root stack with section + divider for each
@@ -206,7 +207,13 @@ final class StatsPopoverController: NSViewController {
         }
 
         if let temperature {
-            tempLabel.stringValue = temperature.level.label
+            if let c = temperature.celsius {
+                tempLabel.stringValue = String(format: "%.0f °C", c)
+                tempBreakdown.stringValue = temperature.level.label.lowercased()
+            } else {
+                tempLabel.stringValue = temperature.level.label
+                tempBreakdown.stringValue = "thermal pressure (no sensor reading)"
+            }
             tempDot.color = temperature.level.color
         }
     }

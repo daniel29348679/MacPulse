@@ -122,7 +122,11 @@ final class StatusBarController: NSObject {
             topParts.append(String(format: "RAM %2.0f%%", s.usagePercent))
         }
         if visible.contains(.temperature), let s = lastTemperature {
-            topParts.append(s.level.compactSymbol)
+            if let c = s.celsius {
+                topParts.append(String(format: "%.0f°", c))
+            } else {
+                topParts.append(s.level.compactSymbol)
+            }
         }
 
         // 下排：Network / Disk 這類「速率」
@@ -208,7 +212,7 @@ final class StatusBarController: NSObject {
         let current = Settings.shared.updateInterval
         for interval in Settings.allowedIntervals {
             let item = NSMenuItem(
-                title: String(format: "%.1f s", interval),
+                title: Settings.intervalLabel(interval),
                 action: #selector(selectInterval(_:)),
                 keyEquivalent: ""
             )

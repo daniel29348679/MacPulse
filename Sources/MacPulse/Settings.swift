@@ -37,8 +37,16 @@ final class Settings {
         static let popoverVisible     = "macpulse.popover.visible"     // [Metric.rawValue]
     }
 
-    static let allowedIntervals: [TimeInterval] = [1.0, 1.5, 2.0, 3.0, 5.0]
-    static let defaultInterval: TimeInterval = 1.5
+    static let allowedIntervals: [TimeInterval] = [0.5, 1.0, 3.0, 5.0, 10.0]
+    static let defaultInterval: TimeInterval = 1.0
+
+    /// 給 UI 用的字串標籤（整數秒不顯示小數）
+    static func intervalLabel(_ interval: TimeInterval) -> String {
+        if interval.truncatingRemainder(dividingBy: 1) == 0 {
+            return "\(Int(interval))s"
+        }
+        return String(format: "%.1fs", interval)
+    }
 
     /// 採樣間隔（秒）
     var updateInterval: TimeInterval {
