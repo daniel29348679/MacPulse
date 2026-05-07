@@ -10,6 +10,7 @@ final class StatusBarController: NSObject {
     private let network = NetworkMonitor()
     private let disk = DiskMonitor()
     private let temperature = TemperatureMonitor()
+    private let power = PowerMonitor()
 
     private var timer: Timer?
 
@@ -19,6 +20,7 @@ final class StatusBarController: NSObject {
     private var lastNetwork: NetworkMonitor.Sample?
     private var lastDisk: DiskMonitor.Sample?
     private var lastTemperature: TemperatureMonitor.Sample?
+    private var lastPower: PowerMonitor.Sample?
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -84,13 +86,15 @@ final class StatusBarController: NSObject {
         lastNetwork = network.sample()
         lastDisk = disk.sample()
         lastTemperature = temperature.sample()
+        lastPower = power.sample()
 
         renderMenuBar()
         popoverController.update(cpu: lastCPU,
                                  memory: lastMemory,
                                  network: lastNetwork,
                                  disk: lastDisk,
-                                 temperature: lastTemperature)
+                                 temperature: lastTemperature,
+                                 power: lastPower)
     }
 
     // MARK: - Menu bar rendering
@@ -127,6 +131,13 @@ final class StatusBarController: NSObject {
                 topParts.append(String(format: "%.0f°", c))
             } else {
                 topParts.append(s.level.compactSymbol)
+            }
+        }
+        if visible.contains(.power), let s = lastPower, let watts = s.watts {
+            switch s.state {
+            case .charging:    topParts.append(String(format: "↑%.0fW", watts))
+            case .discharging: topParts.append(String(format: "↓%.0fW", watts))
+            case .ac, .unavailable: break
             }
         }
 

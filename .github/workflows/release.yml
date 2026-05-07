@@ -32,6 +32,9 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "$BIN_PATH/MacPulse" "$APP/Contents/MacOS/MacPulse"
           chmod +x "$APP/Contents/MacOS/MacPulse"
+          if [ -f Resources/AppIcon.icns ]; then
+            cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          fi
           VERSION="${GITHUB_REF_NAME#v}"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -52,6 +55,8 @@ jobs:
               <string>${VERSION}</string>
               <key>CFBundleVersion</key>
               <string>${VERSION}</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
               <key>LSMinimumSystemVersion</key>
               <string>13.0</string>
               <key>LSUIElement</key>

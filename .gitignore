@@ -11,3 +11,10 @@ DerivedData/
 *.mode2v3
 *.perspectivev3
 *.xcuserstate
+
+# Local .app bundles (rebuild via scripts/build-app.sh)
+MacPulse.app/
+
+# Icon master PNG — regenerate with scripts/make-icon.swift
+Resources/AppIcon-1024.png
+Resources/AppIcon.iconset/

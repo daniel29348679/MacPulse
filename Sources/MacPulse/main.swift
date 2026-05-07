@@ -17,6 +17,21 @@ if CommandLine.arguments.contains("--dump-sensors") {
     exit(0)
 }
 
+// Render README screenshots and exit. Used from `scripts/make-screenshots.sh`.
+if let i = CommandLine.arguments.firstIndex(of: "--render-screenshots"),
+   i + 1 < CommandLine.arguments.count {
+    let outDir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    do {
+        try Screenshots.render(into: outDir)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+        exit(1)
+    }
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

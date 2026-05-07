@@ -30,6 +30,10 @@ final class StatsPopoverController: NSViewController {
     private let tempBreakdown = StatsPopoverController.makeSecondaryLabel()
     private let tempDot = ColorDotView()
 
+    // Power
+    private let powerLabel = StatsPopoverController.makeValueLabel()
+    private let powerBreakdown = StatsPopoverController.makeSecondaryLabel()
+
     // Footer
     private let versionLabel: NSTextField = {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
@@ -121,6 +125,11 @@ final class StatsPopoverController: NSViewController {
         let tempSection = stack([tempHeader, tempBreakdown], spacing: 4)
         sections[.temperature] = tempSection
 
+        // Power
+        let powerHeader = headerRow(metric: .power, valueView: powerLabel)
+        let powerSection = stack([powerHeader, powerBreakdown], spacing: 4)
+        sections[.power] = powerSection
+
         // Compose root stack with section + divider for each
         var rootSubviews: [NSView] = [header, divider()]
         for metric in Metric.allCases {
@@ -196,7 +205,8 @@ final class StatsPopoverController: NSViewController {
                 memory: MemoryMonitor.Sample?,
                 network: NetworkMonitor.Sample?,
                 disk: DiskMonitor.Sample?,
-                temperature: TemperatureMonitor.Sample?) {
+                temperature: TemperatureMonitor.Sample?,
+                power: PowerMonitor.Sample?) {
 
         if let cpu {
             cpuValueLabel.stringValue = String(format: "%.1f %%", cpu.total)
@@ -231,6 +241,23 @@ final class StatsPopoverController: NSViewController {
                 tempBreakdown.stringValue = "thermal pressure (no sensor reading)"
             }
             tempDot.color = temperature.level.color
+        }
+
+        if let power {
+            switch power.state {
+            case .charging:
+                powerLabel.stringValue = String(format: "↑ %.1f W", power.watts ?? 0)
+                powerBreakdown.stringValue = "charging" + (power.percent.map { " · \($0)%" } ?? "")
+            case .discharging:
+                powerLabel.stringValue = String(format: "↓ %.1f W", power.watts ?? 0)
+                powerBreakdown.stringValue = "on battery" + (power.percent.map { " · \($0)%" } ?? "")
+            case .ac:
+                powerLabel.stringValue = "AC"
+                powerBreakdown.stringValue = "plugged in" + (power.percent.map { " · \($0)%" } ?? "")
+            case .unavailable:
+                powerLabel.stringValue = "—"
+                powerBreakdown.stringValue = "no battery"
+            }
         }
     }
 
