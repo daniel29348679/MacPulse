@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: swift build (${{ matrix.configuration }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ matrix.configuration }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-${{ matrix.configuration }}-
+
+      - name: Build
+        run: swift build -c ${{ matrix.configuration }}
+
+      - name: Smoke test (release only)
+        if: matrix.configuration == 'release'
+        run: |
+          ./.build/release/MacPulse &
+          PID=$!
+          sleep 3
+          if kill -0 $PID 2>/dev/null; then
+            echo "OK: launched cleanly"
+            kill $PID
+            wait $PID 2>/dev/null || true
+          else
+            echo "FAIL: process exited early"
+            exit 1
+          fi
