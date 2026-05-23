@@ -8,6 +8,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var popoverCheckboxes: [Metric: NSButton] = [:]
     private var intervalSegment: NSSegmentedControl!
     private var sparklineWindowSegment: NSSegmentedControl!
+    private var topProcessSegment: NSSegmentedControl!
     private var launchAtLoginCheckbox: NSButton!
 
     // Update UI
@@ -88,6 +89,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sparklineWindowSegment.segmentStyle = .rounded
         sparklineWindowSegment.translatesAutoresizingMaskIntoConstraints = false
 
+        // Top processes count
+        let topProcessLabel = sectionTitle("TOP PROCESSES TO SHOW")
+        let topProcessLabels = Settings.allowedTopProcessCounts.map { "\($0)" }
+        topProcessSegment = NSSegmentedControl(labels: topProcessLabels,
+                                               trackingMode: .selectOne,
+                                               target: self,
+                                               action: #selector(topProcessCountChanged(_:)))
+        topProcessSegment.segmentStyle = .rounded
+        topProcessSegment.translatesAutoresizingMaskIntoConstraints = false
+
         // Menu bar metrics
         let menuBarLabel = sectionTitle("SHOW IN MENU BAR")
         let menuBarStack = NSStackView()
@@ -163,6 +174,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             divider(),
             wrap(label: intervalLabel, content: intervalSegment),
             wrap(label: sparklineLabel, content: sparklineWindowSegment),
+            wrap(label: topProcessLabel, content: topProcessSegment),
             divider(),
             twoColumns,
             divider(),
@@ -186,6 +198,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             mainStack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             intervalSegment.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48),
             sparklineWindowSegment.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48),
+            topProcessSegment.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48),
             footer.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48)
         ])
         return container
@@ -235,6 +248,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let idx = sender.selectedSegment
         guard idx >= 0, idx < Settings.allowedSparklineWindows.count else { return }
         Settings.shared.sparklineWindowSeconds = Settings.allowedSparklineWindows[idx]
+    }
+
+    @objc private func topProcessCountChanged(_ sender: NSSegmentedControl) {
+        let idx = sender.selectedSegment
+        guard idx >= 0, idx < Settings.allowedTopProcessCounts.count else { return }
+        Settings.shared.topProcessCount = Settings.allowedTopProcessCounts[idx]
     }
 
     @objc private func menuBarToggled(_ sender: NSButton) {
@@ -368,6 +387,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let window = Settings.shared.sparklineWindowSeconds
         if let idx = Settings.allowedSparklineWindows.firstIndex(of: window) {
             sparklineWindowSegment.selectedSegment = idx
+        }
+        let topCount = Settings.shared.topProcessCount
+        if let idx = Settings.allowedTopProcessCounts.firstIndex(of: topCount) {
+            topProcessSegment.selectedSegment = idx
         }
 
         let menuBar = Settings.shared.menuBarMetrics

@@ -11,6 +11,42 @@ final class StatsPopoverController: NSViewController {
     private let cpuBreakdown = StatsPopoverController.makeSecondaryLabel()
     private let cpuSparkline = SparklineView(capacity: 60)
 
+    // Top processes (within the CPU section)
+    private let processesHeaderButton: NSButton = {
+        let button = NSButton(title: "▼  TOP PROCESSES", target: nil, action: nil)
+        button.bezelStyle = .accessoryBarAction
+        button.isBordered = false
+        button.alignment = .left
+        button.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = "Click to collapse / expand"
+        return button
+    }()
+    private let processListStack: NSStackView = {
+        let s = NSStackView()
+        s.orientation = .vertical
+        s.alignment = .leading
+        s.spacing = 1
+        return s
+    }()
+    private let moreProcessesButton: NSButton = {
+        let button = NSButton(title: "More ▸", target: nil, action: nil)
+        button.bezelStyle = .accessoryBarAction
+        button.isBordered = false
+        button.contentTintColor = .controlAccentColor
+        button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        return button
+    }()
+    private var processRows: [ProcessRowControl] = []
+    private var allProcesses: [ProcessMonitor.Entry] = []
+    /// 由外部（StatusBarController）注入：執行 Quit / Force Kill 並回報結果。
+    var processActionHandler: ((ProcessMonitor.Entry, ProcessAction) -> Void)?
+
+    enum ProcessAction {
+        case quit       // SIGTERM
+        case forceKill  // SIGKILL
+    }
+
     // Memory
     private let memValueLabel = StatsPopoverController.makeValueLabel()
     private let memBreakdown = StatsPopoverController.makeSecondaryLabel()
@@ -74,8 +110,27 @@ final class StatsPopoverController: NSViewController {
         cpuSparkline.heightAnchor.constraint(equalToConstant: 30).isActive = true
 
         let cpuRow = headerRow(metric: .cpu, valueView: cpuValueLabel)
-        let cpuSection = stack([cpuRow, cpuBreakdown, cpuSparkline], spacing: 4)
+
+        moreProcessesButton.target = self
+        moreProcessesButton.action = #selector(showMoreProcessesMenu(_:))
+        processesHeaderButton.target = self
+        processesHeaderButton.action = #selector(toggleProcessesCollapsed)
+
+        let processesSection = stack([processesHeaderButton, processListStack, moreProcessesButton], spacing: 4)
+
+        let cpuSection = stack([cpuRow, cpuBreakdown, cpuSparkline, processesSection], spacing: 4)
         sections[.cpu] = cpuSection
+
+        // Process list 寬度跟著 CPU section 撐滿
+        processListStack.translatesAutoresizingMaskIntoConstraints = false
+        processListStack.widthAnchor.constraint(equalTo: processesSection.widthAnchor).isActive = true
+        processesSection.translatesAutoresizingMaskIntoConstraints = false
+        processesSection.widthAnchor.constraint(equalTo: cpuSection.widthAnchor).isActive = true
+        processesHeaderButton.translatesAutoresizingMaskIntoConstraints = false
+        processesHeaderButton.widthAnchor.constraint(equalTo: processesSection.widthAnchor).isActive = true
+
+        rebuildProcessRows()
+        applyProcessesCollapsedState()
 
         // Memory
         memSparkline.fixedMaxValue = 100
@@ -176,6 +231,161 @@ final class StatsPopoverController: NSViewController {
         cpuSparkline.setCapacity(cap)
         memSparkline.setCapacity(cap)
         netSparkline.setCapacity(cap)
+    }
+
+    /// 設定的 topProcessCount 改變時呼叫，調整 inline row 數量。
+    func applyProcessSettings() {
+        rebuildProcessRows()
+        applyProcessesCollapsedState()
+        adjustPreferredSize()
+    }
+
+    private func applyProcessesCollapsedState() {
+        let collapsed = Settings.shared.processesCollapsed
+        processListStack.isHidden = collapsed
+        // moreButton 的可見度同時受 collapsed 跟「是否有 extra」影響
+        let hasExtras = allProcesses.count > Settings.shared.topProcessCount
+        moreProcessesButton.isHidden = collapsed || !hasExtras
+        processesHeaderButton.title = collapsed ? "▶  TOP PROCESSES" : "▼  TOP PROCESSES"
+    }
+
+    @objc private func toggleProcessesCollapsed() {
+        Settings.shared.processesCollapsed.toggle()
+        // settingsChanged 通知會回頭呼叫 applyProcessSettings()，這裡不用再做事
+    }
+
+    // MARK: - Process list
+
+    private func rebuildProcessRows() {
+        let target = Settings.shared.topProcessCount
+        while processRows.count > target {
+            let removed = processRows.removeLast()
+            processListStack.removeArrangedSubview(removed)
+            removed.removeFromSuperview()
+        }
+        while processRows.count < target {
+            let row = ProcessRowControl()
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.onClick = { [weak self] entry, anchor in
+                self?.showActionMenu(for: entry, anchor: anchor)
+            }
+            processListStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: processListStack.widthAnchor).isActive = true
+            processRows.append(row)
+        }
+        updateProcessRowContents()
+    }
+
+    func updateProcesses(_ entries: [ProcessMonitor.Entry]) {
+        allProcesses = entries
+        updateProcessRowContents()
+    }
+
+    private func updateProcessRowContents() {
+        for (idx, row) in processRows.enumerated() {
+            row.update(idx < allProcesses.count ? allProcesses[idx] : nil)
+        }
+        // moreButton 的最終可見度由 applyProcessesCollapsedState 統一處理，
+        // 避免 collapsed 狀態被資料更新覆蓋掉。
+        applyProcessesCollapsedState()
+    }
+
+    @objc private func showMoreProcessesMenu(_ sender: NSButton) {
+        let visible = Settings.shared.topProcessCount
+        let extras = Array(allProcesses.dropFirst(visible))
+        let menu = NSMenu()
+        if extras.isEmpty {
+            let empty = NSMenuItem(title: "No additional processes", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        } else {
+            for entry in extras {
+                let title = String(format: "%@   %.1f%%", entry.name, entry.cpuPercent)
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.submenu = buildActionMenu(for: entry)
+                menu.addItem(item)
+            }
+        }
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: 0, y: sender.bounds.height + 2),
+                   in: sender)
+    }
+
+    private func showActionMenu(for entry: ProcessMonitor.Entry, anchor: NSView) {
+        let menu = buildActionMenu(for: entry, includeHeader: true)
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: anchor.bounds.midX, y: anchor.bounds.height),
+                   in: anchor)
+    }
+
+    private func buildActionMenu(for entry: ProcessMonitor.Entry, includeHeader: Bool = false) -> NSMenu {
+        let menu = NSMenu()
+        if includeHeader {
+            let header = NSMenuItem(title: "\(entry.name) — PID \(entry.pid)", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            menu.addItem(.separator())
+        }
+
+        let quit = NSMenuItem(title: "Quit", action: #selector(menuQuitProcess(_:)), keyEquivalent: "")
+        quit.target = self
+        quit.representedObject = entry
+        menu.addItem(quit)
+
+        let force = NSMenuItem(title: "Force Kill", action: #selector(menuForceKillProcess(_:)), keyEquivalent: "")
+        force.target = self
+        force.representedObject = entry
+        menu.addItem(force)
+
+        menu.addItem(.separator())
+
+        let copy = NSMenuItem(title: "Copy PID (\(entry.pid))", action: #selector(menuCopyPID(_:)), keyEquivalent: "")
+        copy.target = self
+        copy.representedObject = entry
+        menu.addItem(copy)
+
+        return menu
+    }
+
+    @objc private func menuQuitProcess(_ sender: NSMenuItem) {
+        guard let entry = sender.representedObject as? ProcessMonitor.Entry else { return }
+        confirmAndPerform(entry: entry, action: .quit)
+    }
+
+    @objc private func menuForceKillProcess(_ sender: NSMenuItem) {
+        guard let entry = sender.representedObject as? ProcessMonitor.Entry else { return }
+        confirmAndPerform(entry: entry, action: .forceKill)
+    }
+
+    @objc private func menuCopyPID(_ sender: NSMenuItem) {
+        guard let entry = sender.representedObject as? ProcessMonitor.Entry else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(String(entry.pid), forType: .string)
+    }
+
+    private func confirmAndPerform(entry: ProcessMonitor.Entry, action: ProcessAction) {
+        let alert = NSAlert()
+        switch action {
+        case .quit:
+            alert.messageText = "Quit “\(entry.name)”?"
+            alert.informativeText = "Sends SIGTERM to PID \(entry.pid). The app will be asked to quit normally."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Quit")
+        case .forceKill:
+            alert.messageText = "Force kill “\(entry.name)”?"
+            alert.informativeText = "Sends SIGKILL to PID \(entry.pid). Any unsaved work in this process will be lost."
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: "Force Kill")
+        }
+        alert.addButton(withTitle: "Cancel")
+
+        // NSAlert sheet modal 是非同步的；popover 上跑 sheet 不漂亮，
+        // 直接 runModal 把 alert 拉到最前面即可。
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+        processActionHandler?(entry, action)
     }
 
     func applyVisibility() {
@@ -370,5 +580,112 @@ final class ColorDotView: NSView {
         let rect = bounds.insetBy(dx: 1, dy: 1)
         color.setFill()
         NSBezierPath(ovalIn: rect).fill()
+    }
+}
+
+/// 行程列表中的一列：左側顯示名稱，右側顯示 CPU%，整行可點擊彈出選單。
+final class ProcessRowControl: NSControl {
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let cpuLabel = NSTextField(labelWithString: "")
+    private let chevron = NSImageView()
+    private var trackingArea: NSTrackingArea?
+    private var entry: ProcessMonitor.Entry?
+
+    /// 點擊時 callback：傳回該行 entry 與 anchor view（讓呼叫端決定要怎麼定位選單）。
+    var onClick: ((ProcessMonitor.Entry, NSView) -> Void)?
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 4
+
+        nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        nameLabel.textColor = .labelColor
+        nameLabel.lineBreakMode = .byTruncatingMiddle
+        nameLabel.cell?.usesSingleLineMode = true
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        nameLabel.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        cpuLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        cpuLabel.textColor = .secondaryLabelColor
+        cpuLabel.alignment = .right
+        cpuLabel.translatesAutoresizingMaskIntoConstraints = false
+        cpuLabel.setContentHuggingPriority(.required, for: .horizontal)
+        cpuLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        if let img = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
+            chevron.image = img.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        }
+        chevron.contentTintColor = .tertiaryLabelColor
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(nameLabel)
+        addSubview(cpuLabel)
+        addSubview(chevron)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 20),
+
+            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            cpuLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 8),
+            cpuLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            cpuLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+
+            chevron.leadingAnchor.constraint(equalTo: cpuLabel.trailingAnchor, constant: 4),
+            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 10)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard entry != nil else { return }
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let entry else { return }
+        onClick?(entry, self)
+    }
+
+    override var acceptsFirstResponder: Bool { false }
+
+    func update(_ entry: ProcessMonitor.Entry?) {
+        self.entry = entry
+        if let entry {
+            nameLabel.stringValue = entry.name
+            cpuLabel.stringValue = String(format: "%.1f%%", entry.cpuPercent)
+            chevron.isHidden = false
+            isHidden = false
+            toolTip = "\(entry.command)\nPID \(entry.pid)"
+        } else {
+            nameLabel.stringValue = "—"
+            cpuLabel.stringValue = ""
+            chevron.isHidden = true
+            isHidden = true
+            toolTip = nil
+        }
     }
 }

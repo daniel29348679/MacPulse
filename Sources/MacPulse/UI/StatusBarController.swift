@@ -11,6 +11,7 @@ final class StatusBarController: NSObject {
     private let disk = DiskMonitor()
     private let temperature = TemperatureMonitor()
     private let power = PowerMonitor()
+    private let processes = ProcessMonitor()
 
     private var timer: Timer?
     private var screenAsleep = false
@@ -40,6 +41,9 @@ final class StatusBarController: NSObject {
             self?.openSettings()
         }
         popoverController.onQuit = { NSApp.terminate(nil) }
+        popoverController.processActionHandler = { [weak self] entry, action in
+            self?.performProcessAction(entry: entry, action: action)
+        }
 
         // 第一次取基準
         _ = cpu.sample()
@@ -114,6 +118,7 @@ final class StatusBarController: NSObject {
         startTimer()           // interval 可能變了
         popoverController.applyVisibility()
         popoverController.applySparklineCapacity()
+        popoverController.applyProcessSettings()
         renderMenuBar()        // 用最後一次樣本重繪
     }
 
@@ -160,7 +165,48 @@ final class StatusBarController: NSObject {
                                      disk: lastDisk,
                                      temperature: lastTemperature,
                                      power: lastPower)
+            refreshProcessList()
         }
+    }
+
+    private func refreshProcessList() {
+        let needed = Settings.shared.topProcessCount + Settings.extraTopProcessCount
+        processes.sample(limit: needed) { [weak self] entries in
+            self?.popoverController.updateProcesses(entries)
+        }
+    }
+
+    private func performProcessAction(entry: ProcessMonitor.Entry,
+                                      action: StatsPopoverController.ProcessAction) {
+        let result: ProcessMonitor.QuitResult
+        switch action {
+        case .quit:      result = processes.gracefulQuit(pid: entry.pid)
+        case .forceKill: result = processes.forceKill(pid: entry.pid)
+        }
+        switch result {
+        case .success:
+            // 馬上重新取樣，讓使用者看到行程從列表消失。
+            refreshProcessList()
+        case .notPermitted:
+            presentProcessError(title: "Not allowed",
+                                message: "macOS denied the request to quit “\(entry.name)” (PID \(entry.pid)). System or root-owned processes can't be terminated from MacPulse.")
+        case .noSuchProcess:
+            // 行程已經自己掛了 — 安靜刷新即可。
+            refreshProcessList()
+        case .failed(let code):
+            presentProcessError(title: "Couldn't quit “\(entry.name)”",
+                                message: "kill() returned errno \(code).")
+        }
+    }
+
+    private func presentProcessError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     // MARK: - Menu bar rendering
@@ -319,6 +365,8 @@ final class StatusBarController: NSObject {
                                      power: lastPower)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            // 第一次打開先抓一次行程，不然要等下一次 tick 才有內容。
+            refreshProcessList()
         }
     }
 
