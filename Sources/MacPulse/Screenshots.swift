@@ -14,13 +14,22 @@ enum Screenshots {
         let defaults = UserDefaults.standard
         let backupInterval = defaults.object(forKey: "macpulse.updateInterval")
         let backupWindow = defaults.object(forKey: "macpulse.sparkline.window")
+        let backupMenuBar = defaults.object(forKey: "macpulse.menuBar.visible")
+        let backupPopover = defaults.object(forKey: "macpulse.popover.visible")
         defaults.set(1.0, forKey: "macpulse.updateInterval")
         defaults.set(60.0, forKey: "macpulse.sparkline.window")
+        defaults.set([Metric.cpu, .gpu, .memory, .network, .power].map(\.rawValue),
+                     forKey: "macpulse.menuBar.visible")
+        defaults.set(Metric.allCases.map(\.rawValue), forKey: "macpulse.popover.visible")
         defer {
             if let v = backupInterval { defaults.set(v, forKey: "macpulse.updateInterval") }
             else { defaults.removeObject(forKey: "macpulse.updateInterval") }
             if let v = backupWindow { defaults.set(v, forKey: "macpulse.sparkline.window") }
             else { defaults.removeObject(forKey: "macpulse.sparkline.window") }
+            if let v = backupMenuBar { defaults.set(v, forKey: "macpulse.menuBar.visible") }
+            else { defaults.removeObject(forKey: "macpulse.menuBar.visible") }
+            if let v = backupPopover { defaults.set(v, forKey: "macpulse.popover.visible") }
+            else { defaults.removeObject(forKey: "macpulse.popover.visible") }
         }
 
         // --- Popover (synthetic but realistic numbers) ---
@@ -33,6 +42,12 @@ enum Screenshots {
         primeSparklines(popover)
 
         let cpu     = CPUMonitor.Sample(user: 9.2, system: 4.1, idle: 86.7)
+        let gpu     = GPUMonitor.Sample(utilizationPercent: 18,
+                                        rendererPercent: 12,
+                                        tilerPercent: 6,
+                                        usedMemoryBytes: UInt64(940 * 1024 * 1024),
+                                        modelName: "Apple GPU",
+                                        coreCount: 20)
         let memory  = MemoryMonitor.Sample(usedBytes:  UInt64(11.2 * 1024 * 1024 * 1024),
                                            totalBytes: UInt64(16   * 1024 * 1024 * 1024))
         let network = NetworkMonitor.Sample(downloadBytesPerSec: 1_240_000,
@@ -41,7 +56,7 @@ enum Screenshots {
                                          writeBytesPerSec: 760 * 1024)
         let temp    = TemperatureMonitor.Sample(celsius: 47, level: .nominal)
         let power   = PowerMonitor.Sample(state: .discharging, watts: 12.4, percent: 84)
-        popover.update(cpu: cpu, memory: memory, network: network,
+        popover.update(cpu: cpu, gpu: gpu, memory: memory, network: network,
                        disk: disk, temperature: temp, power: power)
 
         let view = popover.view
@@ -62,7 +77,7 @@ enum Screenshots {
 
         // Render a charging variant too, so the README can show both states.
         let powerCharging = PowerMonitor.Sample(state: .charging, watts: 38.7, percent: 62)
-        popover.update(cpu: cpu, memory: memory, network: network,
+        popover.update(cpu: cpu, gpu: gpu, memory: memory, network: network,
                        disk: disk, temperature: temp, power: powerCharging)
         view.layoutSubtreeIfNeeded()
         try writePNG(view: view, to: directory.appendingPathComponent("popover-charging.png"))
@@ -95,6 +110,12 @@ enum Screenshots {
             popover.appendSamples(
                 cpu: CPUMonitor.Sample(user: cpuCurve[i] * 0.7, system: cpuCurve[i] * 0.3,
                                        idle: 100 - cpuCurve[i]),
+                gpu: GPUMonitor.Sample(utilizationPercent: max(0, cpuCurve[i] * 0.8 - 4),
+                                       rendererPercent: max(0, cpuCurve[i] * 0.55),
+                                       tilerPercent: max(0, cpuCurve[i] * 0.25),
+                                       usedMemoryBytes: nil,
+                                       modelName: nil,
+                                       coreCount: nil),
                 memory: MemoryMonitor.Sample(usedBytes: UInt64(memCurve[i] / 100 * 16 * 1024 * 1024 * 1024),
                                              totalBytes: UInt64(16 * 1024 * 1024 * 1024)),
                 network: NetworkMonitor.Sample(downloadBytesPerSec: netCurve[i],

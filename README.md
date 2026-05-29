@@ -6,7 +6,7 @@
 
 **A tiny native macOS menu bar app that gives you a live pulse of your machine.**
 
-CPU · Memory · Network · Disk · Temperature · Power — at a glance, in one click.
+CPU · GPU · Memory · Network · Disk · Temperature · Power — at a glance, in one click.
 
 No Electron. No background daemon. Just a single Swift binary that sits quietly in your menu bar.
 
@@ -23,6 +23,7 @@ No Electron. No background daemon. Just a single Swift binary that sits quietly 
 | | |
 |---|---|
 | **CPU** | total %, with user / system / idle breakdown + rolling sparkline |
+| **GPU** | device utilization %, renderer / tiler breakdown, and active unified-memory use |
 | **Memory** | % and `used / total` GB, computed the way Activity Monitor does (`active + wired + compressed`) |
 | **Network** | live ↓ / ↑ rates across all physical interfaces — `lo`, `utun`, `awdl`, `bridge` excluded |
 | **Disk** | read / write bytes per second across every `IOBlockStorageDriver` device |
@@ -43,7 +44,7 @@ Every metric can be **toggled independently** in the menu bar and in the popover
 The status bar text adapts to your selection. With the default loadout it reads:
 
 ```
-   CPU 12%  RAM 47%  ↓12W
+   CPU 12%  GPU 18%  RAM 47%  ↓12W
    ↓ 1.2M  ↑ 234K
 ```
 
@@ -94,6 +95,7 @@ The first build takes ~30s; after that startup is instant.
 | Metric  | Source                                                            |
 | ------- | ----------------------------------------------------------------- |
 | CPU         | `host_statistics(HOST_CPU_LOAD_INFO)` — diff of user/system/idle ticks between samples |
+| GPU         | IOKit `IOAccelerator.PerformanceStatistics` — device / renderer / tiler utilization and active system memory |
 | Memory      | `host_statistics64(HOST_VM_INFO64)` — `(active + wired + compressed) × page_size`      |
 | Network     | `getifaddrs()` + `if_data` — diff of `ifi_ibytes` / `ifi_obytes` between samples       |
 | Disk        | IOKit `IOBlockStorageDriver.Statistics` — diff of `Bytes (Read)` / `Bytes (Write)`     |
@@ -140,6 +142,7 @@ MacPulse/
     ├── Screenshots.swift            # offscreen render mode for marketing shots
     ├── Monitors/
     │   ├── CPUMonitor.swift
+    │   ├── GPUMonitor.swift         # IOAccelerator PerformanceStatistics via IOKit
     │   ├── MemoryMonitor.swift
     │   ├── NetworkMonitor.swift
     │   ├── DiskMonitor.swift
@@ -163,8 +166,8 @@ MacPulse/
 - [x] Thermal state indicator
 - [x] On-die °C temperature reading
 - [x] Battery charge / discharge wattage
+- [x] GPU usage
 - [x] App icon
-- [ ] GPU usage (Apple Silicon)
 - [ ] Per-core CPU breakdown
 - [ ] Notarized `.app` bundle in releases
 

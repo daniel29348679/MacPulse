@@ -6,6 +6,7 @@ final class StatusBarController: NSObject {
     private let popoverController = StatsPopoverController()
 
     private let cpu = CPUMonitor()
+    private let gpu = GPUMonitor()
     private let memory = MemoryMonitor()
     private let network = NetworkMonitor()
     private let disk = DiskMonitor()
@@ -18,6 +19,7 @@ final class StatusBarController: NSObject {
 
     // 暫存最後一次樣本，用於 popover 重新整理（即使該 metric 不在 menu bar）
     private var lastCPU: CPUMonitor.Sample?
+    private var lastGPU: GPUMonitor.Sample?
     private var lastMemory: MemoryMonitor.Sample?
     private var lastNetwork: NetworkMonitor.Sample?
     private var lastDisk: DiskMonitor.Sample?
@@ -143,6 +145,7 @@ final class StatusBarController: NSObject {
 
     private func tick() {
         lastCPU = cpu.sample()
+        lastGPU = gpu.sample()
         lastMemory = memory.sample()
         lastNetwork = network.sample()
         lastDisk = disk.sample()
@@ -156,10 +159,12 @@ final class StatusBarController: NSObject {
         // updates while the popover is hidden.
         let popoverShown = popover.isShown
         popoverController.appendSamples(cpu: lastCPU,
+                                        gpu: lastGPU,
                                         memory: lastMemory,
                                         network: lastNetwork)
         if popoverShown {
             popoverController.update(cpu: lastCPU,
+                                     gpu: lastGPU,
                                      memory: lastMemory,
                                      network: lastNetwork,
                                      disk: lastDisk,
@@ -234,6 +239,9 @@ final class StatusBarController: NSObject {
         var topParts: [String] = []
         if visible.contains(.cpu), let s = lastCPU {
             topParts.append(String(format: "CPU %2.0f%%", s.total))
+        }
+        if visible.contains(.gpu), let s = lastGPU, let utilization = s.utilizationPercent {
+            topParts.append(String(format: "GPU %2.0f%%", utilization))
         }
         if visible.contains(.memory), let s = lastMemory {
             topParts.append(String(format: "RAM %2.0f%%", s.usagePercent))
@@ -358,6 +366,7 @@ final class StatusBarController: NSObject {
             // Refresh text labels with the most recent cached samples before
             // showing — tick() skips this work while the popover is hidden.
             popoverController.update(cpu: lastCPU,
+                                     gpu: lastGPU,
                                      memory: lastMemory,
                                      network: lastNetwork,
                                      disk: lastDisk,

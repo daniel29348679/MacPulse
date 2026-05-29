@@ -1,11 +1,12 @@
 import Foundation
 
 enum Metric: String, CaseIterable, Codable {
-    case cpu, memory, network, disk, temperature, power
+    case cpu, gpu, memory, network, disk, temperature, power
 
     var displayName: String {
         switch self {
         case .cpu:         return "CPU"
+        case .gpu:         return "GPU"
         case .memory:      return "Memory"
         case .network:     return "Network"
         case .disk:        return "Disk"
@@ -18,6 +19,7 @@ enum Metric: String, CaseIterable, Codable {
     var symbolName: String {
         switch self {
         case .cpu:         return "cpu"
+        case .gpu:         return "display"
         case .memory:      return "memorychip"
         case .network:     return "network"
         case .disk:        return "internaldrive"
@@ -100,7 +102,7 @@ final class Settings {
 
     /// 在選單列要顯示哪些指標
     var menuBarMetrics: Set<Metric> {
-        get { readMetrics(key: Keys.menuBarVisible, default: [.cpu, .memory, .network, .power]) }
+        get { readMetrics(key: Keys.menuBarVisible, default: [.cpu, .gpu, .memory, .network, .power]) }
         set {
             writeMetrics(newValue, key: Keys.menuBarVisible)
             NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)

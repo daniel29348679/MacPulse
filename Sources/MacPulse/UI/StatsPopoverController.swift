@@ -11,6 +11,11 @@ final class StatsPopoverController: NSViewController {
     private let cpuBreakdown = StatsPopoverController.makeSecondaryLabel()
     private let cpuSparkline = SparklineView(capacity: 60)
 
+    // GPU
+    private let gpuValueLabel = StatsPopoverController.makeValueLabel()
+    private let gpuBreakdown = StatsPopoverController.makeSecondaryLabel()
+    private let gpuSparkline = SparklineView(capacity: 60)
+
     // Top processes (within the CPU section)
     private let processesHeaderButton: NSButton = {
         let button = NSButton(title: "▼  TOP PROCESSES", target: nil, action: nil)
@@ -132,6 +137,16 @@ final class StatsPopoverController: NSViewController {
         rebuildProcessRows()
         applyProcessesCollapsedState()
 
+        // GPU
+        gpuSparkline.fixedMaxValue = 100
+        gpuSparkline.lineColor = .systemTeal
+        gpuSparkline.fillColor = NSColor.systemTeal.withAlphaComponent(0.18)
+        gpuSparkline.heightAnchor.constraint(equalToConstant: 30).isActive = true
+
+        let gpuRow = headerRow(metric: .gpu, valueView: gpuValueLabel)
+        let gpuSection = stack([gpuRow, gpuBreakdown, gpuSparkline], spacing: 4)
+        sections[.gpu] = gpuSection
+
         // Memory
         memSparkline.fixedMaxValue = 100
         memSparkline.lineColor = .systemPurple
@@ -229,6 +244,7 @@ final class StatsPopoverController: NSViewController {
     func applySparklineCapacity() {
         let cap = Settings.shared.sparklineCapacity
         cpuSparkline.setCapacity(cap)
+        gpuSparkline.setCapacity(cap)
         memSparkline.setCapacity(cap)
         netSparkline.setCapacity(cap)
     }
@@ -414,14 +430,17 @@ final class StatsPopoverController: NSViewController {
     /// Cheap path: only feeds sparkline buffers so opening the popover later
     /// shows fresh history. Called every tick regardless of popover visibility.
     func appendSamples(cpu: CPUMonitor.Sample?,
+                       gpu: GPUMonitor.Sample?,
                        memory: MemoryMonitor.Sample?,
                        network: NetworkMonitor.Sample?) {
         if let cpu     { cpuSparkline.append(cpu.total) }
+        if let gpu, let utilization = gpu.utilizationPercent { gpuSparkline.append(utilization) }
         if let memory  { memSparkline.append(memory.usagePercent) }
         if let network { netSparkline.append(network.downloadBytesPerSec + network.uploadBytesPerSec) }
     }
 
     func update(cpu: CPUMonitor.Sample?,
+                gpu: GPUMonitor.Sample?,
                 memory: MemoryMonitor.Sample?,
                 network: NetworkMonitor.Sample?,
                 disk: DiskMonitor.Sample?,
@@ -432,6 +451,33 @@ final class StatsPopoverController: NSViewController {
             cpuValueLabel.stringValue = String(format: "%.1f %%", cpu.total)
             cpuBreakdown.stringValue = String(format: "user %.1f · system %.1f · idle %.1f",
                                               cpu.user, cpu.system, cpu.idle)
+        }
+
+        if let gpu {
+            if let utilization = gpu.utilizationPercent {
+                gpuValueLabel.stringValue = String(format: "%.1f %%", utilization)
+            } else {
+                gpuValueLabel.stringValue = "—"
+            }
+
+            var parts: [String] = []
+            if let renderer = gpu.rendererPercent {
+                parts.append(String(format: "renderer %.0f %%", renderer))
+            }
+            if let tiler = gpu.tilerPercent {
+                parts.append(String(format: "tiler %.0f %%", tiler))
+            }
+            if let memory = gpu.usedMemoryBytes {
+                parts.append("mem \(ByteFormatter.size(memory))")
+            }
+            if parts.isEmpty, let model = gpu.modelName {
+                if let cores = gpu.coreCount {
+                    parts.append("\(model) · \(cores) cores")
+                } else {
+                    parts.append(model)
+                }
+            }
+            gpuBreakdown.stringValue = parts.isEmpty ? "no GPU stats" : parts.joined(separator: " · ")
         }
 
         if let memory {
