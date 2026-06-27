@@ -497,7 +497,16 @@ final class StatsPopoverController: NSViewController {
     }
 
     private func maximumPopoverHeight() -> CGFloat {
-        let screen = view.window?.screen ?? preferredScreen ?? NSScreen.main
+        // 不要存取 self.view — 我們可能在 loadView() 內被呼叫到
+        // （applyVisibility() → adjustPreferredSize()），此時 self.view
+        // 還沒指定，存取 self.view 會觸發 AppKit 重新 invoke loadView()
+        // 進入無限遞迴。view 載完之後才從 view.window 拿 screen。
+        let screen: NSScreen?
+        if isViewLoaded {
+            screen = view.window?.screen ?? preferredScreen ?? NSScreen.main
+        } else {
+            screen = preferredScreen ?? NSScreen.main
+        }
         let visibleHeight = screen?.visibleFrame.height ?? 600
         return max(180, visibleHeight - 80)
     }
