@@ -12,7 +12,9 @@ final class NetworkMonitor {
     private var previousTime: Date?
 
     func sample() -> Sample {
-        let (totalIn, totalOut) = readInterfaceCounters()
+        guard let (totalIn, totalOut) = readInterfaceCounters() else {
+            return Sample(downloadBytesPerSec: 0, uploadBytesPerSec: 0)
+        }
         let now = Date()
 
         defer {
@@ -39,15 +41,16 @@ final class NetworkMonitor {
         )
     }
 
-    private func readInterfaceCounters() -> (UInt64, UInt64) {
+    private func readInterfaceCounters() -> (UInt64, UInt64)? {
         var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddrPtr) == 0, let first = ifaddrPtr else {
-            return (0, 0)
+            return nil
         }
         defer { freeifaddrs(ifaddrPtr) }
 
         var totalIn: UInt64 = 0
         var totalOut: UInt64 = 0
+        var foundInterface = false
 
         var cursor: UnsafeMutablePointer<ifaddrs>? = first
         while let ptr = cursor {
@@ -65,11 +68,12 @@ final class NetworkMonitor {
             }
 
             guard let dataPtr = ptr.pointee.ifa_data else { continue }
+            foundInterface = true
             let data = dataPtr.assumingMemoryBound(to: if_data.self).pointee
             totalIn  &+= UInt64(data.ifi_ibytes)
             totalOut &+= UInt64(data.ifi_obytes)
         }
 
-        return (totalIn, totalOut)
+        return foundInterface ? (totalIn, totalOut) : nil
     }
 }

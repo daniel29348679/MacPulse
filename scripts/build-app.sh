@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Bundle MacPulse.app from the swift build output.
 # Usage: scripts/build-app.sh [version]
-#   version defaults to "dev"; the GitHub release workflow passes vX.Y.Z.
+#   version defaults to "dev"; a leading "v" is stripped for Info.plist.
 set -euo pipefail
 
-VERSION="${1:-dev}"
+RAW_VERSION="${1:-dev}"
+VERSION="${RAW_VERSION#v}"
 APP="MacPulse.app"
 
 # Default to a single-arch debug build for fast iteration. Pass MACPULSE_RELEASE=1
@@ -57,5 +58,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+if [ "${MACPULSE_RELEASE:-0}" = "1" ]; then
+    codesign --force --deep --sign - "$APP"
+else
+    codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+fi
 echo "✓ built  $APP  (version ${VERSION})"

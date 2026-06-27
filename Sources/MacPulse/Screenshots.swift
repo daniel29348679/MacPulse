@@ -58,10 +58,11 @@ enum Screenshots {
         let power   = PowerMonitor.Sample(state: .discharging, watts: 12.4, percent: 84)
         popover.update(cpu: cpu, gpu: gpu, memory: memory, network: network,
                        disk: disk, temperature: temp, power: power)
+        popover.prepareForDisplay(on: NSScreen.main)
 
         let view = popover.view
         view.layoutSubtreeIfNeeded()
-        let size = view.fittingSize
+        let size = popover.preferredContentSize
 
         // Host the view in a real (offscreen) window so AppKit text/measure paths work.
         let host = NSWindow(contentRect: NSRect(origin: .zero, size: size),
@@ -79,6 +80,7 @@ enum Screenshots {
         let powerCharging = PowerMonitor.Sample(state: .charging, watts: 38.7, percent: 62)
         popover.update(cpu: cpu, gpu: gpu, memory: memory, network: network,
                        disk: disk, temperature: temp, power: powerCharging)
+        popover.prepareForDisplay(on: NSScreen.main)
         view.layoutSubtreeIfNeeded()
         try writePNG(view: view, to: directory.appendingPathComponent("popover-charging.png"))
         host.orderOut(nil)

@@ -33,7 +33,11 @@ enum Metric: String, CaseIterable, Codable {
 final class Settings {
     static let shared = Settings()
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
     private enum Keys {
         static let updateInterval     = "macpulse.updateInterval"

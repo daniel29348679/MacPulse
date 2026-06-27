@@ -5,6 +5,43 @@ final class StatsPopoverController: NSViewController {
     // MARK: - Section views (kept around to toggle isHidden)
 
     private var sections: [Metric: NSView] = [:]
+    private let scrollView: NSScrollView = {
+        let view = NSScrollView()
+        view.drawsBackground = false
+        view.borderType = .noBorder
+        view.hasVerticalScroller = true
+        view.autohidesScrollers = true
+        view.verticalScrollElasticity = .allowed
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
+    }()
+    private let scrollDocumentView = FlippedDocumentView()
+    private var preferredScreen: NSScreen?
+    private let emptyStateView: NSStackView = {
+        let title = NSTextField(labelWithString: "No metrics selected")
+        title.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = .labelColor
+        title.alignment = .center
+
+        let detail = NSTextField(labelWithString: "Use Settings to choose what appears here.")
+        detail.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        detail.textColor = .secondaryLabelColor
+        detail.alignment = .center
+        detail.maximumNumberOfLines = 2
+
+        let stack = NSStackView(views: [title, detail])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 4
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 0, bottom: 14, right: 0)
+        stack.setAccessibilityLabel("No metrics selected. Use Settings to choose what appears in the popover.")
+        return stack
+    }()
+    private let emptyStateDivider: NSBox = {
+        let box = NSBox()
+        box.boxType = .separator
+        return box
+    }()
 
     // CPU
     private let cpuValueLabel = StatsPopoverController.makeValueLabel()
@@ -25,6 +62,8 @@ final class StatsPopoverController: NSViewController {
         button.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
         button.contentTintColor = .secondaryLabelColor
         button.toolTip = "Click to collapse / expand"
+        button.setAccessibilityLabel("Top processes")
+        button.setAccessibilityHelp("Collapse or expand the top processes list.")
         return button
     }()
     private let processListStack: NSStackView = {
@@ -40,6 +79,8 @@ final class StatsPopoverController: NSViewController {
         button.isBordered = false
         button.contentTintColor = .controlAccentColor
         button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        button.toolTip = "Show additional processes"
+        button.setAccessibilityLabel("Show additional processes")
         return button
     }()
     private var processRows: [ProcessRowControl] = []
@@ -98,9 +139,13 @@ final class StatsPopoverController: NSViewController {
         title.font = NSFont.systemFont(ofSize: 14, weight: .bold)
         title.textColor = .labelColor
 
-        let settingsButton = iconButton(symbol: "gearshape", action: #selector(openSettings))
+        let settingsButton = iconButton(symbol: "gearshape",
+                                        accessibilityLabel: "Open Settings",
+                                        action: #selector(openSettings))
         settingsButton.toolTip = "Settings"
-        let quitButton = iconButton(symbol: "power", action: #selector(quitApp))
+        let quitButton = iconButton(symbol: "power",
+                                    accessibilityLabel: "Quit MacPulse",
+                                    action: #selector(quitApp))
         quitButton.toolTip = "Quit MacPulse"
 
         let header = NSStackView(views: [title, NSView(), settingsButton, quitButton])
@@ -208,6 +253,8 @@ final class StatsPopoverController: NSViewController {
                 rootSubviews.append(divider())
             }
         }
+        rootSubviews.append(emptyStateView)
+        rootSubviews.append(emptyStateDivider)
 
         let footerRow = NSStackView(views: [versionLabel, NSView()])
         footerRow.orientation = .horizontal
@@ -220,12 +267,25 @@ final class StatsPopoverController: NSViewController {
         rootStack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 12, right: 16)
         rootStack.translatesAutoresizingMaskIntoConstraints = false
 
-        container.addSubview(rootStack)
+        scrollDocumentView.translatesAutoresizingMaskIntoConstraints = false
+        scrollDocumentView.addSubview(rootStack)
+        scrollView.documentView = scrollDocumentView
+        container.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            rootStack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            rootStack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            rootStack.topAnchor.constraint(equalTo: container.topAnchor),
-            rootStack.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            scrollDocumentView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            scrollDocumentView.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
+            scrollDocumentView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            scrollDocumentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+
+            rootStack.leadingAnchor.constraint(equalTo: scrollDocumentView.leadingAnchor),
+            rootStack.trailingAnchor.constraint(equalTo: scrollDocumentView.trailingAnchor),
+            rootStack.topAnchor.constraint(equalTo: scrollDocumentView.topAnchor),
+            rootStack.bottomAnchor.constraint(equalTo: scrollDocumentView.bottomAnchor)
         ])
 
         // 撐滿到 stack 寬度
@@ -263,6 +323,7 @@ final class StatsPopoverController: NSViewController {
         let hasExtras = allProcesses.count > Settings.shared.topProcessCount
         moreProcessesButton.isHidden = collapsed || !hasExtras
         processesHeaderButton.title = collapsed ? "▶  TOP PROCESSES" : "▼  TOP PROCESSES"
+        processesHeaderButton.setAccessibilityValue(collapsed ? "Collapsed" : "Expanded")
     }
 
     @objc private func toggleProcessesCollapsed() {
@@ -295,6 +356,7 @@ final class StatsPopoverController: NSViewController {
     func updateProcesses(_ entries: [ProcessMonitor.Entry]) {
         allProcesses = entries
         updateProcessRowContents()
+        adjustPreferredSize()
     }
 
     private func updateProcessRowContents() {
@@ -416,13 +478,28 @@ final class StatsPopoverController: NSViewController {
                 if next is NSBox { next.isHidden = !visible.contains(metric) }
             }
         }
+        emptyStateView.isHidden = !visible.isEmpty
+        emptyStateDivider.isHidden = !visible.isEmpty
         adjustPreferredSize()
     }
 
     private func adjustPreferredSize() {
         rootStack.layoutSubtreeIfNeeded()
-        let size = rootStack.fittingSize
-        preferredContentSize = NSSize(width: 280, height: max(size.height, 80))
+        let contentHeight = max(rootStack.fittingSize.height, 80)
+        let cappedHeight = min(contentHeight, maximumPopoverHeight())
+        scrollView.hasVerticalScroller = contentHeight > cappedHeight + 1
+        preferredContentSize = NSSize(width: 280, height: cappedHeight)
+    }
+
+    func prepareForDisplay(on screen: NSScreen?) {
+        preferredScreen = screen
+        adjustPreferredSize()
+    }
+
+    private func maximumPopoverHeight() -> CGFloat {
+        let screen = view.window?.screen ?? preferredScreen ?? NSScreen.main
+        let visibleHeight = screen?.visibleFrame.height ?? 600
+        return max(180, visibleHeight - 80)
     }
 
     // MARK: - Sample updates
@@ -533,16 +610,19 @@ final class StatsPopoverController: NSViewController {
 
     private func headerRow(metric: Metric, valueView: NSView?) -> NSStackView {
         let icon = NSImageView()
-        if let img = NSImage(systemSymbolName: metric.symbolName, accessibilityDescription: nil) {
+        if let img = NSImage(systemSymbolName: metric.symbolName, accessibilityDescription: metric.displayName) {
             icon.image = img.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
         }
         icon.contentTintColor = .secondaryLabelColor
+        icon.toolTip = metric.displayName
+        icon.setAccessibilityLabel("\(metric.displayName) icon")
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
 
         let title = NSTextField(labelWithString: metric.displayName.uppercased())
         title.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
         title.textColor = .secondaryLabelColor
+        title.setAccessibilityLabel(metric.displayName)
 
         var views: [NSView] = [icon, title, NSView()]
         if let valueView { views.append(valueView) }
@@ -559,6 +639,26 @@ final class StatsPopoverController: NSViewController {
         symbolLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
         symbolLabel.textColor = .secondaryLabelColor
         symbolLabel.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        switch symbol {
+        case "↓":
+            symbolLabel.toolTip = "Download"
+            symbolLabel.setAccessibilityLabel("Download rate")
+            value.setAccessibilityLabel("Download rate")
+        case "↑":
+            symbolLabel.toolTip = "Upload"
+            symbolLabel.setAccessibilityLabel("Upload rate")
+            value.setAccessibilityLabel("Upload rate")
+        case "R":
+            symbolLabel.toolTip = "Disk read"
+            symbolLabel.setAccessibilityLabel("Disk read rate")
+            value.setAccessibilityLabel("Disk read rate")
+        case "W":
+            symbolLabel.toolTip = "Disk write"
+            symbolLabel.setAccessibilityLabel("Disk write rate")
+            value.setAccessibilityLabel("Disk write rate")
+        default:
+            break
+        }
 
         let stack = NSStackView(views: [symbolLabel, value])
         stack.orientation = .horizontal
@@ -581,16 +681,17 @@ final class StatsPopoverController: NSViewController {
         return box
     }
 
-    private func iconButton(symbol: String, action: Selector) -> NSButton {
+    private func iconButton(symbol: String, accessibilityLabel: String, action: Selector) -> NSButton {
         let button = NSButton()
         button.bezelStyle = .accessoryBarAction
         button.isBordered = false
-        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) {
+        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: accessibilityLabel) {
             button.image = img.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
         }
         button.target = self
         button.action = action
         button.contentTintColor = .secondaryLabelColor
+        button.setAccessibilityLabel(accessibilityLabel)
         return button
     }
 
@@ -645,6 +746,9 @@ final class ProcessRowControl: NSControl {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = 4
+        setAccessibilityElement(true)
+        setAccessibilityLabel("Process")
+        setAccessibilityHelp("Open process actions")
 
         nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
         nameLabel.textColor = .labelColor
@@ -725,13 +829,26 @@ final class ProcessRowControl: NSControl {
             cpuLabel.stringValue = String(format: "%.1f%%", entry.cpuPercent)
             chevron.isHidden = false
             isHidden = false
-            toolTip = "\(entry.command)\nPID \(entry.pid)"
+            toolTip = String(format: "%@\nPID %d\nCPU %.1f%%",
+                             entry.command,
+                             entry.pid,
+                             entry.cpuPercent)
+            setAccessibilityLabel("\(entry.name), PID \(entry.pid)")
+            setAccessibilityValue(String(format: "%.1f percent CPU", entry.cpuPercent))
+            setAccessibilityHelp("Open actions for \(entry.name)")
         } else {
             nameLabel.stringValue = "—"
             cpuLabel.stringValue = ""
             chevron.isHidden = true
             isHidden = true
             toolTip = nil
+            setAccessibilityLabel("Process")
+            setAccessibilityValue(nil)
+            setAccessibilityHelp("No process")
         }
     }
+}
+
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }

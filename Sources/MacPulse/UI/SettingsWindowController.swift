@@ -106,7 +106,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         menuBarStack.alignment = .leading
         menuBarStack.spacing = 6
         for metric in Metric.allCases {
-            let cb = checkbox(for: metric, action: #selector(menuBarToggled(_:)))
+            let cb = checkbox(for: metric,
+                              scope: "menu bar",
+                              action: #selector(menuBarToggled(_:)))
             menuBarCheckboxes[metric] = cb
             menuBarStack.addArrangedSubview(cb)
         }
@@ -118,7 +120,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         popoverStack.alignment = .leading
         popoverStack.spacing = 6
         for metric in Metric.allCases {
-            let cb = checkbox(for: metric, action: #selector(popoverToggled(_:)))
+            let cb = checkbox(for: metric,
+                              scope: "popover",
+                              action: #selector(popoverToggled(_:)))
             popoverCheckboxes[metric] = cb
             popoverStack.addArrangedSubview(cb)
         }
@@ -225,14 +229,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return box
     }
 
-    private func checkbox(for metric: Metric, action: Selector) -> NSButton {
+    private func checkbox(for metric: Metric, scope: String, action: Selector) -> NSButton {
         let button = NSButton(checkboxWithTitle: metric.displayName, target: self, action: action)
         button.identifier = NSUserInterfaceItemIdentifier(metric.rawValue)
-        if let img = NSImage(systemSymbolName: metric.symbolName, accessibilityDescription: nil) {
-            button.image = img.withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
-            button.imagePosition = .imageRight
-            button.imageHugsTitle = false
-        }
+        button.toolTip = "Show \(metric.displayName) in \(scope)"
+        button.setAccessibilityLabel("Show \(metric.displayName) in \(scope)")
         return button
     }
 

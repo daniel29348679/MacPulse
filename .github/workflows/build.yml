@@ -31,10 +31,24 @@ jobs:
       - name: Build
         run: swift build -c ${{ matrix.configuration }}
 
+      - name: Build app bundle (release only)
+        if: matrix.configuration == 'release'
+        run: MACPULSE_RELEASE=1 scripts/build-app.sh 0.0.0
+
+      - name: Validate app bundle (release only)
+        if: matrix.configuration == 'release'
+        run: |
+          set -euo pipefail
+          test -x MacPulse.app/Contents/MacOS/MacPulse
+          plutil -lint MacPulse.app/Contents/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' MacPulse.app/Contents/Info.plist)" = "app.macpulse.MacPulse"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' MacPulse.app/Contents/Info.plist)" = "0.0.0"
+          codesign --verify --deep --strict MacPulse.app
+
       - name: Smoke test (release only)
         if: matrix.configuration == 'release'
         run: |
-          ./.build/release/MacPulse &
+          ./MacPulse.app/Contents/MacOS/MacPulse &
           PID=$!
           sleep 3
           if kill -0 $PID 2>/dev/null; then

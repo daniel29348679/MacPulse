@@ -18,60 +18,22 @@ jobs:
       - name: Show toolchain
         run: swift --version
 
-      - name: Build (release, universal)
-        run: |
-          swift build -c release \
-            --arch arm64 \
-            --arch x86_64
+      - name: Build app bundle
+        run: MACPULSE_RELEASE=1 scripts/build-app.sh "$GITHUB_REF_NAME"
 
-      - name: Assemble MacPulse.app
+      - name: Validate app bundle
         run: |
           set -euo pipefail
-          APP="MacPulse.app"
-          BIN_PATH="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp "$BIN_PATH/MacPulse" "$APP/Contents/MacOS/MacPulse"
-          chmod +x "$APP/Contents/MacOS/MacPulse"
-          if [ -f Resources/AppIcon.icns ]; then
-            cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-          fi
           VERSION="${GITHUB_REF_NAME#v}"
-          cat > "$APP/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>MacPulse</string>
-              <key>CFBundleIdentifier</key>
-              <string>app.macpulse.MacPulse</string>
-              <key>CFBundleName</key>
-              <string>MacPulse</string>
-              <key>CFBundleDisplayName</key>
-              <string>MacPulse</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${VERSION}</string>
-              <key>CFBundleVersion</key>
-              <string>${VERSION}</string>
-              <key>CFBundleIconFile</key>
-              <string>AppIcon</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>13.0</string>
-              <key>LSUIElement</key>
-              <true/>
-              <key>NSHighResolutionCapable</key>
-              <true/>
-          </dict>
-          </plist>
-          PLIST
-
-      - name: Ad-hoc sign (unsigned binaries are blocked by Gatekeeper)
-        run: codesign --force --deep --sign - MacPulse.app
+          test -x MacPulse.app/Contents/MacOS/MacPulse
+          plutil -lint MacPulse.app/Contents/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' MacPulse.app/Contents/Info.plist)" = "app.macpulse.MacPulse"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' MacPulse.app/Contents/Info.plist)" = "$VERSION"
+          codesign --verify --deep --strict MacPulse.app
 
       - name: Zip
         run: |
+          set -euo pipefail
           ditto -c -k --sequesterRsrc --keepParent MacPulse.app MacPulse-${GITHUB_REF_NAME}.zip
           shasum -a 256 MacPulse-${GITHUB_REF_NAME}.zip > MacPulse-${GITHUB_REF_NAME}.zip.sha256
 

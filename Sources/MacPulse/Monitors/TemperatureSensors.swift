@@ -130,7 +130,6 @@ enum TemperatureSensors {
             return matchesCPU && !isExcluded
         }
 
-        let candidates = cpuReadings.isEmpty ? all : cpuReadings
-        return candidates.map(\.celsius).max()
+        return cpuReadings.map(\.celsius).max()
     }
 }

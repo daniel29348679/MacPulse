@@ -12,7 +12,9 @@ final class DiskMonitor {
     private var previousTime: Date?
 
     func sample() -> Sample {
-        let (totalRead, totalWrite) = readDriveCounters()
+        guard let (totalRead, totalWrite) = readDriveCounters() else {
+            return Sample(readBytesPerSec: 0, writeBytesPerSec: 0)
+        }
         let now = Date()
 
         defer {
@@ -39,20 +41,21 @@ final class DiskMonitor {
         )
     }
 
-    private func readDriveCounters() -> (UInt64, UInt64) {
+    private func readDriveCounters() -> (UInt64, UInt64)? {
         guard let matching = IOServiceMatching("IOBlockStorageDriver") else {
-            return (0, 0)
+            return nil
         }
 
         var iterator: io_iterator_t = 0
         let result = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator)
         guard result == KERN_SUCCESS else {
-            return (0, 0)
+            return nil
         }
         defer { IOObjectRelease(iterator) }
 
         var totalRead: UInt64 = 0
         var totalWrite: UInt64 = 0
+        var foundStats = false
 
         var drive = IOIteratorNext(iterator)
         while drive != 0 {
@@ -68,6 +71,7 @@ final class DiskMonitor {
             else {
                 continue
             }
+            foundStats = true
 
             if let r = stats["Bytes (Read)"] as? NSNumber {
                 totalRead &+= r.uint64Value
@@ -77,6 +81,6 @@ final class DiskMonitor {
             }
         }
 
-        return (totalRead, totalWrite)
+        return foundStats ? (totalRead, totalWrite) : nil
     }
 }
