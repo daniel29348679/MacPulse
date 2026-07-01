@@ -1,7 +1,10 @@
+import Foundation
 @testable import MacPulse
 
 enum ProcessMonitorTests {
     static let tests: [MacPulseTestCase] = [
+        MacPulseTestCase("ProcessMonitor live sample includes own process", testLiveSampleIncludesOwnProcess),
+        MacPulseTestCase("ProcessMonitor live sample measures busy process CPU", testLiveSampleMeasuresBusyProcessCPU),
         MacPulseTestCase("ProcessMonitor displayName uses binary basename", testDisplayNameUsesBinaryBaseName),
         MacPulseTestCase("ProcessMonitor displayName keeps kernel names", testDisplayNameKeepsKernelStyleNames),
         MacPulseTestCase("ProcessMonitor displayName adds interpreter script", testDisplayNameAddsScriptForInterpreters),
@@ -12,6 +15,49 @@ enum ProcessMonitorTests {
         MacPulseTestCase("ProcessMonitor computeEntries treats PID reuse as new process", testComputeEntriesPIDReuseGivesZero),
         MacPulseTestCase("ProcessMonitor computeEntries applies limit", testComputeEntriesAppliesLimit)
     ]
+
+    static func testLiveSampleIncludesOwnProcess() throws {
+        // 冒煙測試真正的 libproc 取樣路徑（共用 argv buffer + 命令列快取）：
+        // 連取兩次，第二次同 pid 且同 identity 的項目會走快取，
+        // 命令列必須跟第一次一致；且至少要有讀得到 argv 的項目。
+        let monitor = ProcessMonitor()
+
+        let first = monitor.sampleSync(limit: ProcessMonitor.hardLimit)
+        try expect(!first.isEmpty, "live sample returned no processes")
+        try expect(first.contains { !$0.command.isEmpty }, "no process had a readable command")
+
+        let second = monitor.sampleSync(limit: ProcessMonitor.hardLimit)
+        try expect(!second.isEmpty, "second live sample returned no processes")
+
+        var firstByPid: [Int32: ProcessMonitor.Entry] = [:]
+        for entry in first { firstByPid[entry.pid] = entry }
+        for entry in second {
+            if let prior = firstByPid[entry.pid], prior.identity == entry.identity {
+                try expectEqual(entry.command, prior.command)
+            }
+        }
+    }
+
+    static func testLiveSampleMeasuresBusyProcessCPU() throws {
+        // 回歸測試：pti_total_* 是 mach 單位不是 ns，忘記換算的話 Apple
+        // Silicon 上 CPU% 會少 ~41.7 倍、全部顯示 0。這裡滿載一顆核心
+        // 0.6 秒，自己的 process 在全機尺度下應該至少 100/cores %
+        // （64 核也有 1.56%），用 1% 當保守門檻。
+        let monitor = ProcessMonitor()
+        _ = monitor.sampleSync(limit: ProcessMonitor.hardLimit)   // baseline
+
+        let end = Date().addingTimeInterval(0.6)
+        var sink = 0.0
+        while Date() < end { sink += 1 }
+        _ = sink
+
+        let entries = monitor.sampleSync(limit: ProcessMonitor.hardLimit)
+        let ownPid = ProcessInfo.processInfo.processIdentifier
+        let own = entries.first { $0.pid == ownPid }
+        try expect(own != nil, "own busy process missing from sample")
+        try expect((own?.cpuPercent ?? 0) > 1.0,
+                   "busy process shows \(own?.cpuPercent ?? 0)% CPU — unit conversion regression?")
+    }
 
     static func testDisplayNameUsesBinaryBaseName() throws {
         try expectEqual(

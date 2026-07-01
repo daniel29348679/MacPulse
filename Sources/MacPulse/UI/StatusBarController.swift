@@ -19,6 +19,9 @@ final class StatusBarController: NSObject {
     private var timer: Timer?
     private var screenAsleep = false
     private var samplerInFlight = false
+    /// 上一次實際畫到選單列的內容（文字行 + menu bar 高度）。
+    /// 內容沒變就不重建 NSImage — 避免閒置時每秒都逼 WindowServer 重繪。
+    private var lastRenderedTitleKey: String?
 
     // 暫存最後一次樣本，用於 popover 重新整理（即使該 metric 不在 menu bar）
     private var lastCPU: CPUMonitor.Sample?
@@ -159,7 +162,14 @@ final class StatusBarController: NSObject {
         guard !samplerInFlight else { return }
         samplerInFlight = true
 
-        let visibleMetrics = Settings.shared.menuBarMetrics.union(Settings.shared.popoverMetrics)
+        let menuBarMetrics = Settings.shared.menuBarMetrics
+        var visibleMetrics = menuBarMetrics.union(Settings.shared.popoverMetrics)
+        // Temperature 與 power 沒有 sparkline 歷史要維持 — popover 關著、
+        // 又不在選單列時，每秒跑 IOHID / IORegistry 取樣純粹是浪費電。
+        if !popover.isShown {
+            if !menuBarMetrics.contains(.temperature) { visibleMetrics.remove(.temperature) }
+            if !menuBarMetrics.contains(.power)       { visibleMetrics.remove(.power) }
+        }
         samplerQueue.async { [weak self] in
             guard let self else { return }
             let samples = self.sample(metrics: visibleMetrics)
@@ -278,11 +288,13 @@ final class StatusBarController: NSObject {
 
     private func renderEmpty() {
         guard let button = statusItem.button else { return }
-        button.title = ""
         button.toolTip = "MacPulse\nNo menu bar metrics selected"
         button.setAccessibilityLabel("MacPulse menu bar status")
         button.setAccessibilityValue("No menu bar metrics selected")
         button.setAccessibilityHelp("Click to open stats. Control-click for menu.")
+        guard lastRenderedTitleKey != "empty" else { return }
+        lastRenderedTitleKey = "empty"
+        button.title = ""
         if let img = NSImage(systemSymbolName: "waveform.path.ecg",
                              accessibilityDescription: "MacPulse") {
             button.image = img.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
@@ -297,7 +309,6 @@ final class StatusBarController: NSObject {
             renderEmpty()
             return
         }
-        button.image = nil
 
         // 上排：CPU / RAM / Temperature 這類「狀態指標」
         var topParts: [String] = []
@@ -357,9 +368,15 @@ final class StatusBarController: NSObject {
         // NSStatusBarButton's attributedTitle path is hit-or-miss for vertical
         // centering across font sizes — render to an NSImage ourselves so the
         // glyphs sit exactly in the middle of the menu bar height.
-        button.title = ""
-        button.attributedTitle = NSAttributedString()
-        button.image = renderTitleImage(topLine: topLine, bottomLine: bottomLine, twoLines: twoLines)
+        // 內容（含 menu bar 高度）沒變就沿用現有 image，跳過重建與重繪；
+        // tooltip / accessibility 字串照常更新（不觸發顯示層重繪）。
+        let renderKey = "\(topLine)\n\(bottomLine)\n\(NSStatusBar.system.thickness)"
+        if renderKey != lastRenderedTitleKey {
+            lastRenderedTitleKey = renderKey
+            button.title = ""
+            button.attributedTitle = NSAttributedString()
+            button.image = renderTitleImage(topLine: topLine, bottomLine: bottomLine, twoLines: twoLines)
+        }
         let accessibilityValue = accessibilityParts.isEmpty
             ? "Waiting for metric samples"
             : accessibilityParts.joined(separator: ", ")
@@ -465,6 +482,9 @@ final class StatusBarController: NSObject {
             popover.contentViewController?.view.window?.makeKey()
             // 第一次打開先抓一次行程，不然要等下一次 tick 才有內容。
             refreshProcessList()
+            // 立刻補一次取樣 — temperature / power 在 popover 關閉期間是跳過
+            // 取樣的，剛剛 update() 餵的是舊快取，這裡馬上刷新成即時值。
+            tick()
         }
     }
 
@@ -559,6 +579,12 @@ final class StatusBarController: NSObject {
     }
 
     private func currentDiagnosticsSnapshot() -> String {
+        // Temperature / power 在不顯示時是跳過取樣的（見 tick()），快取可能是
+        // nil 或舊值 — 匯出診斷時現抓一次。走 samplerQueue.sync 跟一般取樣
+        // 序列化，避免和進行中的 tick 同時使用同一個 IOHID client。
+        let temperatureSample = lastTemperature ?? samplerQueue.sync { temperature.sample() }
+        let powerSample = lastPower ?? samplerQueue.sync { power.sample() }
+
         var lines: [String] = [
             "MacPulse Diagnostics",
             "Generated: \(Self.isoTimestamp())",
@@ -623,23 +649,15 @@ final class StatusBarController: NSObject {
             lines.append("Disk: no sample")
         }
 
-        if let sample = lastTemperature {
-            if let celsius = sample.celsius {
-                lines.append(String(format: "Temperature: %.1f C (%@)", celsius, sample.level.label))
-            } else {
-                lines.append("Temperature: \(sample.level.label)")
-            }
+        if let celsius = temperatureSample.celsius {
+            lines.append(String(format: "Temperature: %.1f C (%@)", celsius, temperatureSample.level.label))
         } else {
-            lines.append("Temperature: no sample")
+            lines.append("Temperature: \(temperatureSample.level.label)")
         }
 
-        if let sample = lastPower {
-            let watts = sample.watts.map { String(format: "%.1f W", $0) } ?? "n/a"
-            let percent = sample.percent.map { "\($0)%" } ?? "n/a"
-            lines.append("Power: \(sample.state.diagnosticsLabel), \(watts), battery \(percent)")
-        } else {
-            lines.append("Power: no sample")
-        }
+        let watts = powerSample.watts.map { String(format: "%.1f W", $0) } ?? "n/a"
+        let percent = powerSample.percent.map { "\($0)%" } ?? "n/a"
+        lines.append("Power: \(powerSample.state.diagnosticsLabel), \(watts), battery \(percent)")
 
         return lines.joined(separator: "\n") + "\n"
     }

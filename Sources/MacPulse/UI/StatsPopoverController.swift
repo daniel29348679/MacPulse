@@ -354,9 +354,18 @@ final class StatsPopoverController: NSViewController {
     }
 
     func updateProcesses(_ entries: [ProcessMonitor.Entry]) {
+        let topCount = Settings.shared.topProcessCount
+        let rowsBefore = min(allProcesses.count, processRows.count)
+        let extrasBefore = allProcesses.count > topCount
         allProcesses = entries
         updateProcessRowContents()
-        adjustPreferredSize()
+        // 列高固定 — 只有可見列數或 More 按鈕的顯示狀態改變時才需要
+        // 重新 layout；每秒對整棵 view tree 跑 layoutSubtreeIfNeeded 太浪費。
+        let rowsAfter = min(allProcesses.count, processRows.count)
+        let extrasAfter = allProcesses.count > topCount
+        if rowsBefore != rowsAfter || extrasBefore != extrasAfter {
+            adjustPreferredSize()
+        }
     }
 
     private func updateProcessRowContents() {

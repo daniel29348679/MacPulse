@@ -26,6 +26,7 @@ enum Updater {
 
     enum UpdateError: LocalizedError {
         case badResponse
+        case httpStatus(Int)
         case noZipAsset
         case checksumInvalid(String)
         case checksumMismatch(expected: String, actual: String)
@@ -38,6 +39,7 @@ enum Updater {
         var errorDescription: String? {
             switch self {
             case .badResponse:        return "Could not parse GitHub response."
+            case .httpStatus(let code): return "GitHub returned HTTP \(code)."
             case .noZipAsset:         return "Latest release has no .zip asset."
             case .checksumInvalid(let m): return "Checksum could not be verified: \(m)"
             case .checksumMismatch(let expected, let actual):
@@ -82,9 +84,16 @@ enum Updater {
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 15
 
-        URLSession.shared.dataTask(with: req) { data, _, error in
+        URLSession.shared.dataTask(with: req) { data, response, error in
             if let error {
                 DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            // GitHub 回 4xx/5xx（rate limit 之類）時 body 是 error JSON，
+            // 不先擋下來會 decode 失敗、回報成看不懂的解析錯誤。
+            if let http = response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode) {
+                DispatchQueue.main.async { completion(.failure(UpdateError.httpStatus(http.statusCode))) }
                 return
             }
             guard let data else {
@@ -104,11 +113,13 @@ enum Updater {
                 let payload = try JSONDecoder().decode(Payload.self, from: data)
                 let version = normalizedVersion(payload.tag_name)
                 let expectedZipName = expectedZipAssetName(tagName: payload.tag_name, version: version)
+                // 這些 URL 是遠端回應裡的字串，之後會餵給 URLSession 與
+                // NSWorkspace.open — 一律只接受 https，擋掉其他 scheme。
                 guard let asset = selectedZipAsset(from: payload.assets,
                                                    expectedZipName: expectedZipName,
                                                    version: version),
-                      let zipURL = URL(string: asset.browser_download_url),
-                      let pageURL = URL(string: payload.html_url) else {
+                      let zipURL = httpsURL(asset.browser_download_url),
+                      let pageURL = httpsURL(payload.html_url) else {
                     DispatchQueue.main.async { completion(.failure(UpdateError.noZipAsset)) }
                     return
                 }
@@ -116,7 +127,7 @@ enum Updater {
                     ?? payload.assets.first { $0.name == "\(expectedZipName).sha256" }
                 let checksumURL: URL?
                 if let checksumAsset {
-                    guard let url = URL(string: checksumAsset.browser_download_url) else {
+                    guard let url = httpsURL(checksumAsset.browser_download_url) else {
                         DispatchQueue.main.async { completion(.failure(UpdateError.badResponse)) }
                         return
                     }
@@ -148,9 +159,16 @@ enum Updater {
             return
         }
 
-        let task = URLSession.shared.downloadTask(with: release.zipURL) { tempURL, _, error in
+        let task = URLSession.shared.downloadTask(with: release.zipURL) { tempURL, response, error in
             if let error {
                 DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            // 404 之類的 error page 也會「下載成功」，先擋掉，
+            // 不然要等到 checksum 驗證才 fail、訊息也難懂。
+            if let http = response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode) {
+                DispatchQueue.main.async { completion(.failure(UpdateError.httpStatus(http.statusCode))) }
                 return
             }
             guard let tempURL else {
@@ -174,11 +192,19 @@ enum Updater {
                                            release: Release) throws -> (workDir: URL, zipPath: URL) {
         let fm = FileManager.default
 
+        // Asset 名稱來自遠端 API 回應 — 只能當單一檔名用。含路徑分隔符
+        // 或 "." / ".." 的名稱可能讓 zip 被寫到 workDir 之外，直接拒絕。
+        let assetName = release.zipAssetName
+        guard !assetName.isEmpty, !assetName.contains("/"),
+              assetName != ".", assetName != ".." else {
+            throw UpdateError.badResponse
+        }
+
         // 把下載到的暫存檔挪到一個有 .zip 副檔名的位置，方便 ditto 處理
         let workDir = fm.temporaryDirectory.appendingPathComponent("macpulse-update-\(UUID().uuidString)")
         try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
 
-        let zipPath = workDir.appendingPathComponent(release.zipAssetName)
+        let zipPath = workDir.appendingPathComponent(assetName)
         if fm.fileExists(atPath: zipPath.path) { try? fm.removeItem(at: zipPath) }
         try fm.moveItem(at: tempURL, to: zipPath)
         return (workDir, zipPath)
@@ -413,9 +439,22 @@ enum Updater {
     }
 
     private static func sha256Hex(of fileURL: URL) throws -> String {
-        let data = try Data(contentsOf: fileURL)
-        let digest = SHA256.hash(data: data)
+        // 串流讀檔 — 不要把整個 zip 一次載進記憶體。
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 只接受 https 的 URL 解析 — 更新流程中所有遠端提供的連結都走這裡。
+    private static func httpsURL(_ string: String) -> URL? {
+        guard let url = URL(string: string),
+              url.scheme?.lowercased() == "https" else { return nil }
+        return url
     }
 
     private static func firstSHA256Hex(in text: String) -> String? {

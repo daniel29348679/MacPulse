@@ -102,10 +102,14 @@ enum TemperatureSensors {
             guard let unmanagedEvent = fns.copyEvent(service, kIOHIDEventTypeTemperature, 0, 0)
             else { continue }
             let eventObj = unmanagedEvent.takeRetainedValue()
-            let event: HIDEvent = unsafeBitCast(eventObj, to: HIDEvent.self)
 
-            let value = fns.getFloatValue(event, kIOHIDEventFieldTemperatureLevel)
-            _ = eventObj
+            // withExtendedLifetime：ARC 允許物件在「最後一次使用」後就釋放，
+            // 而 unsafeBitCast 出來的 raw pointer 不算使用 — 沒有這層包裹，
+            // 優化後可能在 getFloatValue 前就釋放 event（use-after-free）。
+            let value = withExtendedLifetime(eventObj) {
+                fns.getFloatValue(unsafeBitCast(eventObj, to: HIDEvent.self),
+                                  kIOHIDEventFieldTemperatureLevel)
+            }
             guard value > 0, value < 200 else { continue }
             readings.append(TemperatureReading(name: name, celsius: value))
         }

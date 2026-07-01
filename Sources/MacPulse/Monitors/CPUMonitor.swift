@@ -10,13 +10,16 @@ final class CPUMonitor {
     }
 
     private var previousTicks: host_cpu_load_info?
+    // mach_host_self() 每呼叫一次就對 host port 多掛一個 send right ref —
+    // 取樣迴圈裡不要重複呼叫，取一次快取起來。
+    private let host = mach_host_self()
 
     func sample() -> Sample {
         var size = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
         var info = host_cpu_load_info()
         let result = withUnsafeMutablePointer(to: &info) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) {
-                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &size)
+                host_statistics(host, HOST_CPU_LOAD_INFO, $0, &size)
             }
         }
 

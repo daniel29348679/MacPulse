@@ -42,10 +42,21 @@ final class ProcessMonitor {
     private let queue = DispatchQueue(label: "macpulse.process-monitor", qos: .userInitiated)
     private var inFlight = false
 
-    /// 以下三個欄位只在 `queue` 的 serial context 中讀寫。
+    private struct CachedCommand {
+        let identity: ProcessIdentity
+        let command: String
+    }
+
+    /// 以下欄位只在 `queue` 的 serial context 中讀寫。
     private var previousSnapshots: [Int32: PreviousSnapshot] = [:]
+    /// 命令列快取 — argv 在 process 存活期間不變（exec 換影像的極短窗口除外，
+    /// 那只影響顯示名稱），identity 對得上就不用每個 tick 重跑 KERN_PROCARGS2。
+    private var commandCache: [Int32: CachedCommand] = [:]
     private var previousMach: UInt64 = 0
-    private let timebase: mach_timebase_info_data_t = {
+
+    /// mach absolute time → ns 的換算比。Intel 上是 1/1，Apple Silicon 上
+    /// 是 125/3（24 MHz tick）。elapsed 與 pti counter 的換算都用這個。
+    private static let machTimebase: mach_timebase_info_data_t = {
         var info = mach_timebase_info_data_t()
         mach_timebase_info(&info)
         return info
@@ -75,10 +86,10 @@ final class ProcessMonitor {
         let elapsedNs: Double = {
             guard previousMach > 0, nowMach > previousMach else { return 0 }
             let diff = nowMach - previousMach
-            return Double(diff) * Double(timebase.numer) / Double(timebase.denom)
+            return Double(diff) * Double(Self.machTimebase.numer) / Double(Self.machTimebase.denom)
         }()
 
-        let raw = Self.gatherRawSamples()
+        let raw = gatherRawSamples()
         let entries = Self.computeEntries(
             currentSamples: raw,
             previousSnapshots: previousSnapshots,
@@ -138,7 +149,18 @@ final class ProcessMonitor {
 
     // MARK: - libproc sampling
 
-    private static func gatherRawSamples() -> [RawSample] {
+    /// KERN_ARGMAX 只查一次 — argv buffer 的上限（通常 256 KB–1 MB）。
+    private static let argMaxBytes: Int = {
+        var mib: [Int32] = [CTL_KERN, KERN_ARGMAX]
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let ret = mib.withUnsafeMutableBufferPointer { mibPtr in
+            sysctl(mibPtr.baseAddress, u_int(mibPtr.count), &value, &size, nil, 0)
+        }
+        return (ret == 0 && value > 0) ? Int(value) : 262_144
+    }()
+
+    private func gatherRawSamples() -> [RawSample] {
         // proc_listpids(type=0 means 'give me the buffer size'): 先問需要多大。
         let probeBytes = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
         guard probeBytes > 0 else { return [] }
@@ -154,19 +176,35 @@ final class ProcessMonitor {
         guard writtenBytes > 0 else { return [] }
         let count = Int(writtenBytes) / MemoryLayout<pid_t>.stride
 
+        // 一整批 process 共用同一塊 argv buffer — 不要每個 pid 各 malloc
+        // 一次 argMax（256 KB+），那會是每秒上百 MB 的暫時配置。
+        let argvBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Self.argMaxBytes)
+        defer { argvBuffer.deallocate() }
+
         var samples: [RawSample] = []
+        var newCache: [Int32: CachedCommand] = [:]
         samples.reserveCapacity(count)
+        newCache.reserveCapacity(count)
         for i in 0..<count {
             let pid = pids[i]
             guard pid > 0 else { continue }
-            guard let cumulativeNs = taskCumulativeCpuNs(pid: pid) else { continue }
-            guard let identity = processIdentity(for: pid) else { continue }
-            let command = readCommand(pid: pid)
+            guard let cumulativeNs = Self.taskCumulativeCpuNs(pid: pid) else { continue }
+            guard let identity = Self.processIdentity(for: pid) else { continue }
+            let command: String
+            if let cached = commandCache[pid], cached.identity == identity {
+                command = cached.command
+            } else {
+                command = Self.readCommand(pid: pid,
+                                           argvBuffer: argvBuffer,
+                                           argvBufferSize: Self.argMaxBytes)
+            }
+            newCache[pid] = CachedCommand(identity: identity, command: command)
             samples.append(RawSample(pid: pid,
                                      cumulativeCpuNs: cumulativeNs,
                                      identity: identity,
                                      command: command))
         }
+        commandCache = newCache   // 只留這次還活著的 pid，順便修剪掉舊項目
         return samples
     }
 
@@ -177,10 +215,12 @@ final class ProcessMonitor {
             proc_pidinfo(pid, PROC_PIDTASKINFO, 0, ptr, Int32(size))
         }
         guard ret == Int32(size) else { return nil }
-        // pti_total_user / pti_total_system 已經是 ns（libproc 在 kernel 端做完
-        // mach_timebase 換算了）。我們只要把兩者相加就是行程跨所有執行緒的
-        // cumulative on-CPU 時間。
-        return info.pti_total_user &+ info.pti_total_system
+        // pti_total_user / pti_total_system 是 mach absolute time 單位，
+        // 「不是」ns — Intel 的 timebase 恰為 1/1 所以兩者數值相同（這也是
+        // 常見誤解的來源），Apple Silicon 是 24 MHz tick（timebase 125/3），
+        // 直接當 ns 用會把 CPU% 少算 ~41.7 倍、全部顯示成 0。
+        let machUnits = info.pti_total_user &+ info.pti_total_system
+        return machUnits &* UInt64(machTimebase.numer) / UInt64(machTimebase.denom)
     }
 
     private static func processIdentity(for pid: Int32) -> ProcessIdentity? {
@@ -206,8 +246,12 @@ final class ProcessMonitor {
 
     /// 拿 process 的完整命令列（argv 串接）。失敗時 fallback 到 proc_pidpath，
     /// 再不行就用 `(name)` 比照 `ps` 對 kernel-only thread 的呈現。
-    private static func readCommand(pid: Int32) -> String {
-        if let args = processArgv(pid: pid), !args.isEmpty {
+    /// `argvBuffer` 由呼叫端提供並在多個 pid 間重複使用（至少 argMaxBytes 大）。
+    private static func readCommand(pid: Int32,
+                                    argvBuffer: UnsafeMutablePointer<UInt8>,
+                                    argvBufferSize: Int) -> String {
+        if let args = processArgv(pid: pid, buffer: argvBuffer, bufferSize: argvBufferSize),
+           !args.isEmpty {
             return args.joined(separator: " ")
         }
         // PROC_PIDPATHINFO_MAXSIZE = 4 * MAXPATHLEN = 4096；
@@ -228,18 +272,11 @@ final class ProcessMonitor {
 
     /// 透過 `sysctl(KERN_PROCARGS2)` 拿 process argv。其他 user 的 process 會回 EPERM → nil。
     /// Layout: [int32 argc][exec_path\0...][nul padding][argv0\0 argv1\0 ...][envp\0 ...]
-    private static func processArgv(pid: Int32) -> [String]? {
-        var argMax: Int32 = 0
-        var argMaxMib: [Int32] = [CTL_KERN, KERN_ARGMAX]
-        var argMaxSize = MemoryLayout<Int32>.size
-        let argMaxRet = argMaxMib.withUnsafeMutableBufferPointer { mibPtr in
-            sysctl(mibPtr.baseAddress, u_int(mibPtr.count), &argMax, &argMaxSize, nil, 0)
-        }
-        let bufferSize: Int = (argMaxRet == 0 && argMax > 0) ? Int(argMax) : 4096
-
+    /// `buffer` 由呼叫端提供（至少 argMaxBytes），避免每個 pid 反覆配置大塊記憶體。
+    private static func processArgv(pid: Int32,
+                                    buffer: UnsafeMutablePointer<UInt8>,
+                                    bufferSize: Int) -> [String]? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-        defer { buffer.deallocate() }
         var size = bufferSize
         let ret = mib.withUnsafeMutableBufferPointer { mibPtr in
             sysctl(mibPtr.baseAddress, u_int(mibPtr.count), buffer, &size, nil, 0)

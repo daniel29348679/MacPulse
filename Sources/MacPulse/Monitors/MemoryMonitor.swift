@@ -13,13 +13,16 @@ final class MemoryMonitor {
 
     private let totalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     private let pageSize: UInt64 = UInt64(vm_kernel_page_size)
+    // mach_host_self() 每呼叫一次就對 host port 多掛一個 send right ref —
+    // 取樣迴圈裡不要重複呼叫，取一次快取起來。
+    private let host = mach_host_self()
 
     func sample() -> Sample {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &stats) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+                host_statistics64(host, HOST_VM_INFO64, $0, &count)
             }
         }
 
