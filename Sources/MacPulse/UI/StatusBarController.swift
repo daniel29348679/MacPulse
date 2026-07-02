@@ -243,8 +243,8 @@ final class StatusBarController: NSObject {
 
     private func refreshProcessList() {
         let needed = Settings.shared.topProcessCount + Settings.extraTopProcessCount
-        processes.sample(limit: needed) { [weak self] entries in
-            self?.popoverController.updateProcesses(entries)
+        processes.sample(limit: needed) { [weak self] groups in
+            self?.popoverController.updateProcesses(groups)
         }
     }
 

@@ -1,12 +1,16 @@
 import Darwin
 import Foundation
 
-/// 透過 libproc + sysctl 取得依 CPU 使用率排序的行程清單。
+/// 透過 libproc + sysctl 取得依 CPU 使用率排序、同名彙總的行程群組清單。
 /// 不再 fork `/bin/ps` — 在 menu bar app 上每秒 fork+exec 是最大的耗電來源之一。
 ///
 /// CPU% 算法：
 ///   delta_cpu_ns / (elapsed_wall_ns * core_count) * 100
 /// 換算後與整體 CPU 使用率同尺度（0–100%，多執行緒 app 仍可能持平 ≈100%）。
+///
+/// 顯示名稱相同的行程（Chrome helper、Electron app 那種一拆幾十個的）
+/// 彙總成一個 Group 回傳 — 個別看每個 helper 都不起眼，加總才反映真實
+/// 佔用。Quit / Force Kill 仍以個別 Entry 為單位，不對整組操作。
 final class ProcessMonitor {
     struct ProcessIdentity: Hashable {
         let startTimeSeconds: Int64
@@ -22,15 +26,28 @@ final class ProcessMonitor {
         let identity: ProcessIdentity
     }
 
-    /// 一次最多回傳幾筆 — 設定上限避免 UI 列太多。
+    /// 同顯示名稱行程的彙總群組 — 列表顯示以群組為單位。
+    struct Group {
+        let name: String
+        /// 群組內所有行程的 CPU% 加總（與 Entry 同一把全機尺度）。
+        let totalCpuPercent: Double
+        /// 依 CPU% 遞減排序的成員，至少一筆。
+        let entries: [Entry]
+        var count: Int { entries.count }
+    }
+
+    /// 一次最多回傳幾組 — 設定上限避免 UI 列太多。
     static let hardLimit = 50
 
     /// `computeEntries` 的輸入；也是 `gatherRawSamples` 的輸出。
+    /// `name` 在讀 argv 時就算好 — exec 路徑可能含空白（"Google Chrome
+    /// Helper"），事後從 join 過的 command 字串反推會切錯。
     struct RawSample: Equatable {
         let pid: Int32
         let cumulativeCpuNs: UInt64
         let identity: ProcessIdentity
         let command: String
+        let name: String
     }
 
     /// 上一筆樣本，用來算 cumulative CPU 時間的 delta。
@@ -45,6 +62,7 @@ final class ProcessMonitor {
     private struct CachedCommand {
         let identity: ProcessIdentity
         let command: String
+        let name: String
     }
 
     /// 以下欄位只在 `queue` 的 serial context 中讀寫。
@@ -63,25 +81,26 @@ final class ProcessMonitor {
     }()
 
     /// 非同步取樣。若上一筆還沒回來會直接略過這次呼叫（避免堆積）。
-    func sample(limit: Int, completion: @escaping ([Entry]) -> Void) {
+    /// `limit` 是回傳的「群組」數上限。
+    func sample(limit: Int, completion: @escaping ([Group]) -> Void) {
         let cappedLimit = max(1, min(limit, Self.hardLimit))
         if inFlight { return }
         inFlight = true
         queue.async { [weak self] in
-            let entries = self?.run(limit: cappedLimit) ?? []
+            let groups = self?.run(limit: cappedLimit) ?? []
             DispatchQueue.main.async {
                 self?.inFlight = false
-                completion(entries)
+                completion(groups)
             }
         }
     }
 
     /// 同步版本 — 給單元測試或極少數需要立即取得的場合用。
-    func sampleSync(limit: Int) -> [Entry] {
+    func sampleSync(limit: Int) -> [Group] {
         return queue.sync { self.run(limit: max(1, min(limit, Self.hardLimit))) }
     }
 
-    private func run(limit: Int) -> [Entry] {
+    private func run(limit: Int) -> [Group] {
         let nowMach = mach_absolute_time()
         let elapsedNs: Double = {
             guard previousMach > 0, nowMach > previousMach else { return 0 }
@@ -90,13 +109,16 @@ final class ProcessMonitor {
         }()
 
         let raw = gatherRawSamples()
+        // limit 套在「群組」上 — entries 這層不截斷（Int.max），
+        // 沒進前 N 名的同名 helper 才能被加總進去。
         let entries = Self.computeEntries(
             currentSamples: raw,
             previousSnapshots: previousSnapshots,
             elapsedNs: elapsedNs,
             activeProcessorCount: ProcessInfo.processInfo.activeProcessorCount,
-            limit: limit
+            limit: Int.max
         )
+        let groups = Self.groupEntries(entries, limit: limit)
 
         // 用本次的 raw 取代 previous — 下次 tick 才有 delta 可算。
         var newPrev: [Int32: PreviousSnapshot] = [:]
@@ -107,7 +129,7 @@ final class ProcessMonitor {
         }
         previousSnapshots = newPrev
         previousMach = nowMach
-        return entries
+        return groups
     }
 
     // MARK: - Pure compute (testable)
@@ -135,9 +157,8 @@ final class ProcessMonitor {
             } else {
                 pct = 0
             }
-            let name = displayName(from: s.command)
             entries.append(Entry(pid: s.pid,
-                                 name: name,
+                                 name: s.name,
                                  command: s.command,
                                  cpuPercent: pct,
                                  identity: s.identity))
@@ -145,6 +166,32 @@ final class ProcessMonitor {
         entries.sort { $0.cpuPercent > $1.cpuPercent }
         if entries.count > limit { entries.removeLast(entries.count - limit) }
         return entries
+    }
+
+    /// 把（已依 CPU% 遞減排序的）entries 依顯示名稱彙總成群組，
+    /// 依總 CPU% 遞減排序後套 limit。
+    ///
+    /// 彙總必須發生在截斷「之前」— 先截斷 top-N 再加總會漏掉沒進前
+    /// N 名的同名 helper，群組總和會低估（Chrome 30 個 helper 各 0.3%
+    /// 就是這種情況）。
+    static func groupEntries(_ entries: [Entry], limit: Int) -> [Group] {
+        var byName: [String: [Entry]] = [:]
+        for entry in entries {
+            byName[entry.name, default: []].append(entry)
+        }
+        var groups = byName.map { name, members in
+            Group(name: name,
+                  totalCpuPercent: members.reduce(0) { $0 + $1.cpuPercent },
+                  entries: members)   // 成員沿用輸入的遞減排序
+        }
+        // 總量相同時（例如第一個 tick 全為 0）按名稱排 — 清單才不會每秒亂跳
+        groups.sort {
+            $0.totalCpuPercent != $1.totalCpuPercent
+                ? $0.totalCpuPercent > $1.totalCpuPercent
+                : $0.name < $1.name
+        }
+        if groups.count > limit { groups.removeLast(groups.count - limit) }
+        return groups
     }
 
     // MARK: - libproc sampling
@@ -191,18 +238,21 @@ final class ProcessMonitor {
             guard let cumulativeNs = Self.taskCumulativeCpuNs(pid: pid) else { continue }
             guard let identity = Self.processIdentity(for: pid) else { continue }
             let command: String
+            let name: String
             if let cached = commandCache[pid], cached.identity == identity {
                 command = cached.command
+                name = cached.name
             } else {
-                command = Self.readCommand(pid: pid,
-                                           argvBuffer: argvBuffer,
-                                           argvBufferSize: Self.argMaxBytes)
+                (command, name) = Self.readCommand(pid: pid,
+                                                   argvBuffer: argvBuffer,
+                                                   argvBufferSize: Self.argMaxBytes)
             }
-            newCache[pid] = CachedCommand(identity: identity, command: command)
+            newCache[pid] = CachedCommand(identity: identity, command: command, name: name)
             samples.append(RawSample(pid: pid,
                                      cumulativeCpuNs: cumulativeNs,
                                      identity: identity,
-                                     command: command))
+                                     command: command,
+                                     name: name))
         }
         commandCache = newCache   // 只留這次還活著的 pid，順便修剪掉舊項目
         return samples
@@ -244,30 +294,39 @@ final class ProcessMonitor {
                                uid: info.kp_eproc.e_ucred.cr_uid)
     }
 
-    /// 拿 process 的完整命令列（argv 串接）。失敗時 fallback 到 proc_pidpath，
-    /// 再不行就用 `(name)` 比照 `ps` 對 kernel-only thread 的呈現。
+    /// 拿 process 的完整命令列（argv 串接）與顯示名稱。失敗時 fallback 到
+    /// proc_pidpath，再不行就用 `(name)` 比照 `ps` 對 kernel-only thread 的呈現。
+    /// 顯示名稱必須在這裡從 argv 陣列算 — exec 路徑可能含空白，
+    /// join 之後就無法可靠地切回來了。
     /// `argvBuffer` 由呼叫端提供並在多個 pid 間重複使用（至少 argMaxBytes 大）。
     private static func readCommand(pid: Int32,
                                     argvBuffer: UnsafeMutablePointer<UInt8>,
-                                    argvBufferSize: Int) -> String {
+                                    argvBufferSize: Int) -> (command: String, name: String) {
         if let args = processArgv(pid: pid, buffer: argvBuffer, bufferSize: argvBufferSize),
-           !args.isEmpty {
-            return args.joined(separator: " ")
+           let exec = args.first {
+            return (args.joined(separator: " "),
+                    displayName(exec: exec, arguments: Array(args.dropFirst())))
         }
         // PROC_PIDPATHINFO_MAXSIZE = 4 * MAXPATHLEN = 4096；
         // 該 macro 在 Swift importer 看不到（structure not supported）。
         let pathBufSize = 4096
         var path = [CChar](repeating: 0, count: pathBufSize)
         let n = proc_pidpath(pid, &path, UInt32(pathBufSize))
-        if n > 0 { return String(cString: path) }
+        if n > 0 {
+            let p = String(cString: path)
+            return (p, displayName(exec: p, arguments: []))
+        }
 
         var nameBuf = [CChar](repeating: 0, count: 256)
         let nameLen = proc_name(pid, &nameBuf, UInt32(nameBuf.count))
         if nameLen > 0 {
-            let n = String(cString: nameBuf)
-            return n.isEmpty ? "" : "(\(n))"
+            let procName = String(cString: nameBuf)
+            if !procName.isEmpty {
+                let display = "(\(procName))"
+                return (display, display)
+            }
         }
-        return ""
+        return ("", "—")
     }
 
     /// 透過 `sysctl(KERN_PROCARGS2)` 拿 process argv。其他 user 的 process 會回 EPERM → nil。
@@ -315,20 +374,20 @@ final class ProcessMonitor {
 
     // MARK: - Display name
 
-    /// 把命令列轉成一個有意義的顯示名稱。
+    /// 由 exec 路徑 + 參數組出顯示名稱。exec 保留完整路徑傳入，
+    /// 含空白的路徑（"Google Chrome Helper"）才不會被切壞。
     /// - 直接執行的 binary → 取 basename（例：`/Applications/Safari.app/.../Safari` → `Safari`）
     /// - 用 interpreter 跑的 script → 顯示「interpreter script.py」這類組合，方便辨識多個同 interpreter 的 job
     /// - kernel-only thread 慣例上會被包成 `(name)`，原樣保留。
-    static func displayName(from args: String) -> String {
-        if args.hasPrefix("(") && args.hasSuffix(")") {
-            return args
+    static func displayName(exec: String, arguments: [String]) -> String {
+        if exec.hasPrefix("(") && exec.hasSuffix(")") {
+            return exec
         }
-        let tokens = args.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        guard let exec = tokens.first else { return args.isEmpty ? "—" : args }
         let execBase = (exec as NSString).lastPathComponent
+        if execBase.isEmpty { return "—" }
         if Self.interpreters.contains(execBase) {
             // 找第一個不以 - 開頭的 argument 當作 script。
-            for token in tokens.dropFirst() {
+            for token in arguments {
                 if token.hasPrefix("-") { continue }
                 let scriptBase = (token as NSString).lastPathComponent
                 if !scriptBase.isEmpty {

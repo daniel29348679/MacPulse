@@ -84,8 +84,9 @@ final class StatsPopoverController: NSViewController {
         return button
     }()
     private var processRows: [ProcessRowControl] = []
-    private var allProcesses: [ProcessMonitor.Entry] = []
+    private var allGroups: [ProcessMonitor.Group] = []
     /// 由外部（StatusBarController）注入：執行 Quit / Force Kill 並回報結果。
+    /// 群組只是顯示層的彙總 — 操作永遠針對個別 Entry。
     var processActionHandler: ((ProcessMonitor.Entry, ProcessAction) -> Void)?
 
     enum ProcessAction {
@@ -320,7 +321,7 @@ final class StatsPopoverController: NSViewController {
         let collapsed = Settings.shared.processesCollapsed
         processListStack.isHidden = collapsed
         // moreButton 的可見度同時受 collapsed 跟「是否有 extra」影響
-        let hasExtras = allProcesses.count > Settings.shared.topProcessCount
+        let hasExtras = allGroups.count > Settings.shared.topProcessCount
         moreProcessesButton.isHidden = collapsed || !hasExtras
         processesHeaderButton.title = collapsed ? "▶  TOP PROCESSES" : "▼  TOP PROCESSES"
         processesHeaderButton.setAccessibilityValue(collapsed ? "Collapsed" : "Expanded")
@@ -343,8 +344,8 @@ final class StatsPopoverController: NSViewController {
         while processRows.count < target {
             let row = ProcessRowControl()
             row.translatesAutoresizingMaskIntoConstraints = false
-            row.onClick = { [weak self] entry, anchor in
-                self?.showActionMenu(for: entry, anchor: anchor)
+            row.onClick = { [weak self] group, anchor in
+                self?.showActionMenu(for: group, anchor: anchor)
             }
             processListStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: processListStack.widthAnchor).isActive = true
@@ -353,16 +354,16 @@ final class StatsPopoverController: NSViewController {
         updateProcessRowContents()
     }
 
-    func updateProcesses(_ entries: [ProcessMonitor.Entry]) {
+    func updateProcesses(_ groups: [ProcessMonitor.Group]) {
         let topCount = Settings.shared.topProcessCount
-        let rowsBefore = min(allProcesses.count, processRows.count)
-        let extrasBefore = allProcesses.count > topCount
-        allProcesses = entries
+        let rowsBefore = min(allGroups.count, processRows.count)
+        let extrasBefore = allGroups.count > topCount
+        allGroups = groups
         updateProcessRowContents()
         // 列高固定 — 只有可見列數或 More 按鈕的顯示狀態改變時才需要
         // 重新 layout；每秒對整棵 view tree 跑 layoutSubtreeIfNeeded 太浪費。
-        let rowsAfter = min(allProcesses.count, processRows.count)
-        let extrasAfter = allProcesses.count > topCount
+        let rowsAfter = min(allGroups.count, processRows.count)
+        let extrasAfter = allGroups.count > topCount
         if rowsBefore != rowsAfter || extrasBefore != extrasAfter {
             adjustPreferredSize()
         }
@@ -370,7 +371,7 @@ final class StatsPopoverController: NSViewController {
 
     private func updateProcessRowContents() {
         for (idx, row) in processRows.enumerated() {
-            row.update(idx < allProcesses.count ? allProcesses[idx] : nil)
+            row.update(idx < allGroups.count ? allGroups[idx] : nil)
         }
         // moreButton 的最終可見度由 applyProcessesCollapsedState 統一處理，
         // 避免 collapsed 狀態被資料更新覆蓋掉。
@@ -379,17 +380,18 @@ final class StatsPopoverController: NSViewController {
 
     @objc private func showMoreProcessesMenu(_ sender: NSButton) {
         let visible = Settings.shared.topProcessCount
-        let extras = Array(allProcesses.dropFirst(visible))
+        let extras = Array(allGroups.dropFirst(visible))
         let menu = NSMenu()
         if extras.isEmpty {
             let empty = NSMenuItem(title: "No additional processes", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
         } else {
-            for entry in extras {
-                let title = String(format: "%@   %.1f%%", entry.name, entry.cpuPercent)
+            for group in extras {
+                let suffix = group.count > 1 ? " ×\(group.count)" : ""
+                let title = String(format: "%@%@   %.1f%%", group.name, suffix, group.totalCpuPercent)
                 let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-                item.submenu = buildActionMenu(for: entry)
+                item.submenu = buildGroupMenu(for: group, includeHeader: false)
                 menu.addItem(item)
             }
         }
@@ -398,11 +400,37 @@ final class StatsPopoverController: NSViewController {
                    in: sender)
     }
 
-    private func showActionMenu(for entry: ProcessMonitor.Entry, anchor: NSView) {
-        let menu = buildActionMenu(for: entry, includeHeader: true)
+    private func showActionMenu(for group: ProcessMonitor.Group, anchor: NSView) {
+        let menu = buildGroupMenu(for: group, includeHeader: true)
         menu.popUp(positioning: nil,
                    at: NSPoint(x: anchor.bounds.midX, y: anchor.bounds.height),
                    in: anchor)
+    }
+
+    /// 群組選單：單一成員直接沿用個別行程選單；多成員時列出每個 PID，
+    /// 各自帶 Quit / Force Kill 子選單 — 不提供「整組全殺」，同名不保證
+    /// 是同一個東西（例如兩個不相干的 bash）。
+    private func buildGroupMenu(for group: ProcessMonitor.Group, includeHeader: Bool) -> NSMenu {
+        if group.entries.count == 1 {
+            return buildActionMenu(for: group.entries[0], includeHeader: includeHeader)
+        }
+        let menu = NSMenu()
+        if includeHeader {
+            let title = String(format: "%@ — %d processes · %.1f%%",
+                               group.name, group.count, group.totalCpuPercent)
+            let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            menu.addItem(.separator())
+        }
+        for entry in group.entries {
+            let item = NSMenuItem(title: String(format: "PID %d — %.1f%%", entry.pid, entry.cpuPercent),
+                                  action: nil, keyEquivalent: "")
+            item.toolTip = entry.command
+            item.submenu = buildActionMenu(for: entry, includeHeader: true)
+            menu.addItem(item)
+        }
+        return menu
     }
 
     private func buildActionMenu(for entry: ProcessMonitor.Entry, includeHeader: Bool = false) -> NSMenu {
@@ -748,16 +776,17 @@ final class ColorDotView: NSView {
     }
 }
 
-/// 行程列表中的一列：左側顯示名稱，右側顯示 CPU%，整行可點擊彈出選單。
+/// 行程列表中的一列：左側顯示群組名稱（同名多行程時帶 ×N），
+/// 右側顯示加總 CPU%，整行可點擊彈出選單。
 final class ProcessRowControl: NSControl {
     private let nameLabel = NSTextField(labelWithString: "")
     private let cpuLabel = NSTextField(labelWithString: "")
     private let chevron = NSImageView()
     private var trackingArea: NSTrackingArea?
-    private var entry: ProcessMonitor.Entry?
+    private var group: ProcessMonitor.Group?
 
-    /// 點擊時 callback：傳回該行 entry 與 anchor view（讓呼叫端決定要怎麼定位選單）。
-    var onClick: ((ProcessMonitor.Entry, NSView) -> Void)?
+    /// 點擊時 callback：傳回該行群組與 anchor view（讓呼叫端決定要怎麼定位選單）。
+    var onClick: ((ProcessMonitor.Group, NSView) -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -825,7 +854,7 @@ final class ProcessRowControl: NSControl {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        guard entry != nil else { return }
+        guard group != nil else { return }
         layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
     }
 
@@ -834,26 +863,26 @@ final class ProcessRowControl: NSControl {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard let entry else { return }
-        onClick?(entry, self)
+        guard let group else { return }
+        onClick?(group, self)
     }
 
     override var acceptsFirstResponder: Bool { false }
 
-    func update(_ entry: ProcessMonitor.Entry?) {
-        self.entry = entry
-        if let entry {
-            nameLabel.stringValue = entry.name
-            cpuLabel.stringValue = String(format: "%.1f%%", entry.cpuPercent)
+    func update(_ group: ProcessMonitor.Group?) {
+        self.group = group
+        if let group {
+            let suffix = group.count > 1 ? " ×\(group.count)" : ""
+            nameLabel.stringValue = group.name + suffix
+            cpuLabel.stringValue = String(format: "%.1f%%", group.totalCpuPercent)
             chevron.isHidden = false
             isHidden = false
-            toolTip = String(format: "%@\nPID %d\nCPU %.1f%%",
-                             entry.command,
-                             entry.pid,
-                             entry.cpuPercent)
-            setAccessibilityLabel("\(entry.name), PID \(entry.pid)")
-            setAccessibilityValue(String(format: "%.1f percent CPU", entry.cpuPercent))
-            setAccessibilityHelp("Open actions for \(entry.name)")
+            toolTip = Self.tooltip(for: group)
+            setAccessibilityLabel(group.count > 1
+                ? "\(group.name), \(group.count) processes"
+                : "\(group.name), PID \(group.entries[0].pid)")
+            setAccessibilityValue(String(format: "%.1f percent CPU", group.totalCpuPercent))
+            setAccessibilityHelp("Open actions for \(group.name)")
         } else {
             nameLabel.stringValue = "—"
             cpuLabel.stringValue = ""
@@ -864,6 +893,23 @@ final class ProcessRowControl: NSControl {
             setAccessibilityValue(nil)
             setAccessibilityHelp("No process")
         }
+    }
+
+    private static func tooltip(for group: ProcessMonitor.Group) -> String {
+        if group.entries.count == 1 {
+            let entry = group.entries[0]
+            return String(format: "%@\nPID %d\nCPU %.1f%%",
+                          entry.command, entry.pid, entry.cpuPercent)
+        }
+        var lines = [String(format: "%@ — %d processes · CPU %.1f%%",
+                            group.name, group.count, group.totalCpuPercent)]
+        for entry in group.entries.prefix(8) {
+            lines.append(String(format: "PID %d · %.1f%%", entry.pid, entry.cpuPercent))
+        }
+        if group.entries.count > 8 {
+            lines.append("… and \(group.entries.count - 8) more")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
