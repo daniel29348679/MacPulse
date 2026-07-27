@@ -49,7 +49,8 @@ enum Screenshots {
                                         modelName: "Apple GPU",
                                         coreCount: 20)
         let memory  = MemoryMonitor.Sample(usedBytes:  UInt64(11.2 * 1024 * 1024 * 1024),
-                                           totalBytes: UInt64(16   * 1024 * 1024 * 1024))
+                                           totalBytes: UInt64(16   * 1024 * 1024 * 1024),
+                                           swapUsedBytes: UInt64(2.4 * 1024 * 1024 * 1024))
         let network = NetworkMonitor.Sample(downloadBytesPerSec: 1_240_000,
                                             uploadBytesPerSec:    234_000)
         let disk    = DiskMonitor.Sample(readBytesPerSec: 4 * 1024 * 1024,

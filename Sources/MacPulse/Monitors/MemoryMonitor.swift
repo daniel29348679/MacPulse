@@ -5,6 +5,14 @@ final class MemoryMonitor {
     struct Sample {
         let usedBytes: UInt64
         let totalBytes: UInt64
+        let swapUsedBytes: UInt64?
+
+        init(usedBytes: UInt64, totalBytes: UInt64, swapUsedBytes: UInt64? = nil) {
+            self.usedBytes = usedBytes
+            self.totalBytes = totalBytes
+            self.swapUsedBytes = swapUsedBytes
+        }
+
         var usagePercent: Double {
             guard totalBytes > 0 else { return 0 }
             return Double(usedBytes) / Double(totalBytes) * 100
@@ -18,6 +26,7 @@ final class MemoryMonitor {
     private let host = mach_host_self()
 
     func sample() -> Sample {
+        let swapUsedBytes = currentSwapUsedBytes()
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &stats) {
@@ -27,7 +36,7 @@ final class MemoryMonitor {
         }
 
         guard result == KERN_SUCCESS else {
-            return Sample(usedBytes: 0, totalBytes: totalBytes)
+            return Sample(usedBytes: 0, totalBytes: totalBytes, swapUsedBytes: swapUsedBytes)
         }
 
         // macOS Activity Monitor 的「已使用」≈ active + wired + compressed
@@ -37,7 +46,17 @@ final class MemoryMonitor {
 
         return Sample(
             usedBytes: active + wired + compressed,
-            totalBytes: totalBytes
+            totalBytes: totalBytes,
+            swapUsedBytes: swapUsedBytes
         )
+    }
+
+    private func currentSwapUsedBytes() -> UInt64? {
+        var usage = xsw_usage()
+        var size = MemoryLayout<xsw_usage>.size
+        guard sysctlbyname("vm.swapusage", &usage, &size, nil, 0) == 0 else {
+            return nil
+        }
+        return usage.xsu_used
     }
 }

@@ -97,6 +97,7 @@ final class StatsPopoverController: NSViewController {
     // Memory
     private let memValueLabel = StatsPopoverController.makeValueLabel()
     private let memBreakdown = StatsPopoverController.makeSecondaryLabel()
+    private let swapUsedLabel = StatsPopoverController.makeSecondaryLabel()
     private let memSparkline = SparklineView(capacity: 60)
 
     // Network
@@ -200,7 +201,13 @@ final class StatsPopoverController: NSViewController {
         memSparkline.heightAnchor.constraint(equalToConstant: 30).isActive = true
 
         let memRow = headerRow(metric: .memory, valueView: memValueLabel)
-        let memSection = stack([memRow, memBreakdown, memSparkline], spacing: 4)
+        let memDetails = NSStackView(views: [memBreakdown, NSView(), swapUsedLabel])
+        memDetails.orientation = .horizontal
+        memDetails.alignment = .firstBaseline
+        memDetails.spacing = 8
+        let memSection = stack([memRow, memDetails, memSparkline], spacing: 4)
+        memDetails.translatesAutoresizingMaskIntoConstraints = false
+        memDetails.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
         sections[.memory] = memSection
 
         // Network
@@ -606,6 +613,9 @@ final class StatsPopoverController: NSViewController {
         if let memory {
             memValueLabel.stringValue = String(format: "%.1f %%", memory.usagePercent)
             memBreakdown.stringValue = "\(ByteFormatter.size(memory.usedBytes)) / \(ByteFormatter.size(memory.totalBytes))"
+            swapUsedLabel.stringValue = memory.swapUsedBytes.map {
+                "SWAP \(ByteFormatter.size($0))"
+            } ?? "SWAP —"
         }
 
         if let network {

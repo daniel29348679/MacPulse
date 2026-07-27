@@ -627,10 +627,12 @@ final class StatusBarController: NSObject {
         }
 
         if let sample = lastMemory {
-            lines.append(String(format: "Memory: %.1f%% (%@ / %@)",
+            let swapUsed = sample.swapUsedBytes.map(ByteFormatter.size) ?? "unavailable"
+            lines.append(String(format: "Memory: %.1f%% (%@ / %@); swap used %@",
                                 sample.usagePercent,
                                 ByteFormatter.size(sample.usedBytes),
-                                ByteFormatter.size(sample.totalBytes)))
+                                ByteFormatter.size(sample.totalBytes),
+                                swapUsed))
         } else {
             lines.append("Memory: no sample")
         }
