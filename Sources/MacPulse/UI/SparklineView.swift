@@ -28,7 +28,10 @@ final class SparklineView: NSView {
         self.capacity = capacity
         super.init(frame: frame)
         wantsLayer = true
-        layer?.cornerRadius = 4
+        layer?.cornerRadius = 8
+        if #available(macOS 10.15, *) {
+            layer?.cornerCurve = .continuous
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -45,13 +48,16 @@ final class SparklineView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: 1, dy: 1)
+        let rect = bounds.insetBy(dx: 2, dy: 2)
         guard rect.width > 0, rect.height > 0 else { return }
 
         // 背景
-        NSColor.quaternaryLabelColor.withAlphaComponent(0.25).setFill()
-        let bg = NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4)
+        NSColor.controlBackgroundColor.withAlphaComponent(0.34).setFill()
+        let bg = NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8)
         bg.fill()
+        NSColor.separatorColor.withAlphaComponent(0.16).setStroke()
+        bg.lineWidth = 0.5
+        bg.stroke()
 
         guard samples.count >= 2 else { return }
 
@@ -88,11 +94,15 @@ final class SparklineView: NSView {
             area.close()
         }
 
-        fillColor.setFill()
-        area.fill()
+        NSGraphicsContext.saveGraphicsState()
+        area.addClip()
+        let gradient = NSGradient(starting: fillColor.withAlphaComponent(0.06),
+                                  ending: fillColor)
+        gradient?.draw(in: bounds, angle: 90)
+        NSGraphicsContext.restoreGraphicsState()
 
         lineColor.setStroke()
-        line.lineWidth = 1.4
+        line.lineWidth = 1.6
         line.lineJoinStyle = .round
         line.stroke()
     }

@@ -37,11 +37,7 @@ final class StatsPopoverController: NSViewController {
         stack.setAccessibilityLabel("No metrics selected. Use Settings to choose what appears in the popover.")
         return stack
     }()
-    private let emptyStateDivider: NSBox = {
-        let box = NSBox()
-        box.boxType = .separator
-        return box
-    }()
+    private var emptyStateCard: NSView?
 
     // CPU
     private let cpuValueLabel = StatsPopoverController.makeValueLabel()
@@ -55,12 +51,14 @@ final class StatsPopoverController: NSViewController {
 
     // Top processes (within the CPU section)
     private let processesHeaderButton: NSButton = {
-        let button = NSButton(title: "▼  TOP PROCESSES", target: nil, action: nil)
+        let button = NSButton(title: "Top Processes", target: nil, action: nil)
         button.bezelStyle = .accessoryBarAction
         button.isBordered = false
         button.alignment = .left
-        button.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        button.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
         button.contentTintColor = .secondaryLabelColor
+        button.imagePosition = .imageLeading
+        button.imageHugsTitle = true
         button.toolTip = "Click to collapse / expand"
         button.setAccessibilityLabel("Top processes")
         button.setAccessibilityHelp("Collapse or expand the top processes list.")
@@ -74,7 +72,7 @@ final class StatsPopoverController: NSViewController {
         return s
     }()
     private let moreProcessesButton: NSButton = {
-        let button = NSButton(title: "More ▸", target: nil, action: nil)
+        let button = NSButton(title: "Show More", target: nil, action: nil)
         button.bezelStyle = .accessoryBarAction
         button.isBordered = false
         button.contentTintColor = .controlAccentColor
@@ -122,7 +120,7 @@ final class StatsPopoverController: NSViewController {
     private let versionLabel: NSTextField = {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         let label = NSTextField(labelWithString: "v\(v)")
-        label.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
         label.textColor = .tertiaryLabelColor
         return label
     }()
@@ -136,11 +134,23 @@ final class StatsPopoverController: NSViewController {
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
 
-        // Header
+        // Brand and top-level actions. NSPopover provides the main glass surface;
+        // only the controls sit in the elevated Liquid Glass layer.
+        let brandIcon = MacPulseVisualStyle.symbolBadge(
+            "waveform.path.ecg",
+            color: .controlAccentColor,
+            accessibilityDescription: "MacPulse",
+            size: 32
+        )
         let title = NSTextField(labelWithString: "MacPulse")
-        title.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+        title.font = NSFont.systemFont(ofSize: 17, weight: .semibold)
         title.textColor = .labelColor
 
+        let subtitle = NSTextField(labelWithString: "Live system overview")
+        subtitle.font = NSFont.systemFont(ofSize: 10.5, weight: .medium)
+        subtitle.textColor = .secondaryLabelColor
+
+        let titleStack = stack([title, subtitle], spacing: 1)
         let settingsButton = iconButton(symbol: "gearshape",
                                         accessibilityLabel: "Open Settings",
                                         action: #selector(openSettings))
@@ -149,17 +159,23 @@ final class StatsPopoverController: NSViewController {
                                     accessibilityLabel: "Quit MacPulse",
                                     action: #selector(quitApp))
         quitButton.toolTip = "Quit MacPulse"
+        quitButton.hasDestructiveAction = true
 
-        let header = NSStackView(views: [title, NSView(), settingsButton, quitButton])
+        let actions = NSStackView(views: [settingsButton, quitButton])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 6
+
+        let header = NSStackView(views: [brandIcon, titleStack, NSView(), actions])
         header.orientation = .horizontal
         header.alignment = .centerY
-        header.spacing = 4
+        header.spacing = 9
 
         // CPU section
         cpuSparkline.fixedMaxValue = 100
         cpuSparkline.lineColor = .systemBlue
-        cpuSparkline.fillColor = NSColor.systemBlue.withAlphaComponent(0.18)
-        cpuSparkline.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        cpuSparkline.fillColor = NSColor.systemBlue.withAlphaComponent(0.16)
+        cpuSparkline.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         let cpuRow = headerRow(metric: .cpu, valueView: cpuValueLabel)
 
@@ -170,8 +186,8 @@ final class StatsPopoverController: NSViewController {
 
         let processesSection = stack([processesHeaderButton, processListStack, moreProcessesButton], spacing: 4)
 
-        let cpuSection = stack([cpuRow, cpuBreakdown, cpuSparkline, processesSection], spacing: 4)
-        sections[.cpu] = cpuSection
+        let cpuSection = stack([cpuRow, cpuBreakdown, cpuSparkline, processesSection], spacing: 7)
+        sections[.cpu] = popoverCard(around: cpuSection)
 
         // Process list 寬度跟著 CPU section 撐滿
         processListStack.translatesAutoresizingMaskIntoConstraints = false
@@ -180,6 +196,10 @@ final class StatsPopoverController: NSViewController {
         processesSection.widthAnchor.constraint(equalTo: cpuSection.widthAnchor).isActive = true
         processesHeaderButton.translatesAutoresizingMaskIntoConstraints = false
         processesHeaderButton.widthAnchor.constraint(equalTo: processesSection.widthAnchor).isActive = true
+        cpuRow.translatesAutoresizingMaskIntoConstraints = false
+        cpuRow.widthAnchor.constraint(equalTo: cpuSection.widthAnchor).isActive = true
+        cpuSparkline.translatesAutoresizingMaskIntoConstraints = false
+        cpuSparkline.widthAnchor.constraint(equalTo: cpuSection.widthAnchor).isActive = true
 
         rebuildProcessRows()
         applyProcessesCollapsedState()
@@ -187,57 +207,68 @@ final class StatsPopoverController: NSViewController {
         // GPU
         gpuSparkline.fixedMaxValue = 100
         gpuSparkline.lineColor = .systemTeal
-        gpuSparkline.fillColor = NSColor.systemTeal.withAlphaComponent(0.18)
-        gpuSparkline.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        gpuSparkline.fillColor = NSColor.systemTeal.withAlphaComponent(0.16)
+        gpuSparkline.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         let gpuRow = headerRow(metric: .gpu, valueView: gpuValueLabel)
-        let gpuSection = stack([gpuRow, gpuBreakdown, gpuSparkline], spacing: 4)
-        sections[.gpu] = gpuSection
+        let gpuSection = stack([gpuRow, gpuBreakdown, gpuSparkline], spacing: 7)
+        gpuRow.widthAnchor.constraint(equalTo: gpuSection.widthAnchor).isActive = true
+        gpuSparkline.widthAnchor.constraint(equalTo: gpuSection.widthAnchor).isActive = true
+        sections[.gpu] = popoverCard(around: gpuSection)
 
         // Memory
         memSparkline.fixedMaxValue = 100
         memSparkline.lineColor = .systemPurple
-        memSparkline.fillColor = NSColor.systemPurple.withAlphaComponent(0.18)
-        memSparkline.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        memSparkline.fillColor = NSColor.systemPurple.withAlphaComponent(0.16)
+        memSparkline.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         let memRow = headerRow(metric: .memory, valueView: memValueLabel)
         let memDetails = NSStackView(views: [memBreakdown, NSView(), swapUsedLabel])
         memDetails.orientation = .horizontal
         memDetails.alignment = .firstBaseline
         memDetails.spacing = 8
-        let memSection = stack([memRow, memDetails, memSparkline], spacing: 4)
+        let memSection = stack([memRow, memDetails, memSparkline], spacing: 7)
         memDetails.translatesAutoresizingMaskIntoConstraints = false
         memDetails.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
-        sections[.memory] = memSection
+        memRow.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
+        memSparkline.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
+        sections[.memory] = popoverCard(around: memSection)
 
         // Network
         netSparkline.lineColor = .systemGreen
-        netSparkline.fillColor = NSColor.systemGreen.withAlphaComponent(0.18)
-        netSparkline.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        netSparkline.fillColor = NSColor.systemGreen.withAlphaComponent(0.16)
+        netSparkline.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         let downRow = labelledRow(symbol: "↓", value: downLabel)
         let upRow = labelledRow(symbol: "↑", value: upLabel)
         let netHeader = headerRow(metric: .network, valueView: nil)
-        let netRates = NSStackView(views: [downRow, NSView(), upRow])
+        let netRates = NSStackView(views: [downRow, upRow])
         netRates.orientation = .horizontal
-        netRates.spacing = 12
-        let netSection = stack([netHeader, netRates, netSparkline], spacing: 4)
-        sections[.network] = netSection
+        netRates.distribution = .fillEqually
+        netRates.spacing = 10
+        let netSection = stack([netHeader, netRates, netSparkline], spacing: 8)
+        netHeader.widthAnchor.constraint(equalTo: netSection.widthAnchor).isActive = true
+        netRates.widthAnchor.constraint(equalTo: netSection.widthAnchor).isActive = true
+        netSparkline.widthAnchor.constraint(equalTo: netSection.widthAnchor).isActive = true
+        sections[.network] = popoverCard(around: netSection)
 
         // Disk
         let readRow = labelledRow(symbol: "R", value: diskReadLabel)
         let writeRow = labelledRow(symbol: "W", value: diskWriteLabel)
         let diskHeader = headerRow(metric: .disk, valueView: nil)
-        let diskRates = NSStackView(views: [readRow, NSView(), writeRow])
+        let diskRates = NSStackView(views: [readRow, writeRow])
         diskRates.orientation = .horizontal
-        diskRates.spacing = 12
-        let diskSection = stack([diskHeader, diskRates], spacing: 4)
-        sections[.disk] = diskSection
+        diskRates.distribution = .fillEqually
+        diskRates.spacing = 10
+        let diskSection = stack([diskHeader, diskRates], spacing: 9)
+        diskHeader.widthAnchor.constraint(equalTo: diskSection.widthAnchor).isActive = true
+        diskRates.widthAnchor.constraint(equalTo: diskSection.widthAnchor).isActive = true
+        sections[.disk] = popoverCard(around: diskSection)
 
         // Temperature
         tempDot.translatesAutoresizingMaskIntoConstraints = false
-        tempDot.widthAnchor.constraint(equalToConstant: 10).isActive = true
-        tempDot.heightAnchor.constraint(equalToConstant: 10).isActive = true
+        tempDot.widthAnchor.constraint(equalToConstant: 8).isActive = true
+        tempDot.heightAnchor.constraint(equalToConstant: 8).isActive = true
 
         let tempValueRow = NSStackView(views: [tempLabel, tempDot])
         tempValueRow.orientation = .horizontal
@@ -245,34 +276,48 @@ final class StatsPopoverController: NSViewController {
         tempValueRow.alignment = .centerY
 
         let tempHeader = headerRow(metric: .temperature, valueView: tempValueRow)
-        let tempSection = stack([tempHeader, tempBreakdown], spacing: 4)
-        sections[.temperature] = tempSection
+        let tempSection = stack([tempHeader, tempBreakdown], spacing: 7)
+        tempHeader.widthAnchor.constraint(equalTo: tempSection.widthAnchor).isActive = true
+        sections[.temperature] = popoverCard(around: tempSection)
 
         // Power
         let powerHeader = headerRow(metric: .power, valueView: powerLabel)
-        let powerSection = stack([powerHeader, powerBreakdown], spacing: 4)
-        sections[.power] = powerSection
+        let powerSection = stack([powerHeader, powerBreakdown], spacing: 7)
+        powerHeader.widthAnchor.constraint(equalTo: powerSection.widthAnchor).isActive = true
+        sections[.power] = popoverCard(around: powerSection)
 
-        // Compose root stack with section + divider for each
-        var rootSubviews: [NSView] = [header, divider()]
+        // Compose the content layer as semantic material cards. Glass remains
+        // reserved for the popover surface and top-level action buttons.
+        var rootSubviews: [NSView] = [header]
         for metric in Metric.allCases {
             if let section = sections[metric] {
                 rootSubviews.append(section)
-                rootSubviews.append(divider())
             }
         }
-        rootSubviews.append(emptyStateView)
-        rootSubviews.append(emptyStateDivider)
 
-        let footerRow = NSStackView(views: [versionLabel, NSView()])
+        let emptyCard = popoverCard(around: emptyStateView)
+        emptyStateCard = emptyCard
+        rootSubviews.append(emptyCard)
+
+        let liveDot = ColorDotView()
+        liveDot.color = .systemGreen
+        liveDot.translatesAutoresizingMaskIntoConstraints = false
+        liveDot.widthAnchor.constraint(equalToConstant: 7).isActive = true
+        liveDot.heightAnchor.constraint(equalToConstant: 7).isActive = true
+        let liveLabel = NSTextField(labelWithString: "Live")
+        liveLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .medium)
+        liveLabel.textColor = .secondaryLabelColor
+        let footerRow = NSStackView(views: [liveDot, liveLabel, NSView(), versionLabel])
         footerRow.orientation = .horizontal
+        footerRow.alignment = .centerY
+        footerRow.spacing = 5
         rootSubviews.append(footerRow)
 
         rootStack = NSStackView(views: rootSubviews)
         rootStack.orientation = .vertical
         rootStack.alignment = .leading
-        rootStack.spacing = 10
-        rootStack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 12, right: 16)
+        rootStack.spacing = 8
+        rootStack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 10, right: 12)
         rootStack.translatesAutoresizingMaskIntoConstraints = false
 
         scrollDocumentView.translatesAutoresizingMaskIntoConstraints = false
@@ -299,7 +344,7 @@ final class StatsPopoverController: NSViewController {
         // 撐滿到 stack 寬度
         for view in rootSubviews {
             view.translatesAutoresizingMaskIntoConstraints = false
-            view.widthAnchor.constraint(equalTo: rootStack.widthAnchor, constant: -32).isActive = true
+            view.widthAnchor.constraint(equalTo: rootStack.widthAnchor, constant: -24).isActive = true
         }
 
         applyVisibility()
@@ -330,7 +375,10 @@ final class StatsPopoverController: NSViewController {
         // moreButton 的可見度同時受 collapsed 跟「是否有 extra」影響
         let hasExtras = allGroups.count > Settings.shared.topProcessCount
         moreProcessesButton.isHidden = collapsed || !hasExtras
-        processesHeaderButton.title = collapsed ? "▶  TOP PROCESSES" : "▼  TOP PROCESSES"
+        processesHeaderButton.image = NSImage(
+            systemSymbolName: collapsed ? "chevron.right" : "chevron.down",
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
         processesHeaderButton.setAccessibilityValue(collapsed ? "Collapsed" : "Expanded")
     }
 
@@ -514,16 +562,8 @@ final class StatsPopoverController: NSViewController {
         let visible = Settings.shared.popoverMetrics
         for (metric, view) in sections {
             view.isHidden = !visible.contains(metric)
-            // 鄰接的 divider 也要連動 — 找到該 view 後面那個 divider
-            if let stack = view.superview as? NSStackView,
-               let idx = stack.arrangedSubviews.firstIndex(of: view),
-               idx + 1 < stack.arrangedSubviews.count {
-                let next = stack.arrangedSubviews[idx + 1]
-                if next is NSBox { next.isHidden = !visible.contains(metric) }
-            }
         }
-        emptyStateView.isHidden = !visible.isEmpty
-        emptyStateDivider.isHidden = !visible.isEmpty
+        emptyStateCard?.isHidden = !visible.isEmpty
         adjustPreferredSize()
     }
 
@@ -532,7 +572,8 @@ final class StatsPopoverController: NSViewController {
         let contentHeight = max(rootStack.fittingSize.height, 80)
         let cappedHeight = min(contentHeight, maximumPopoverHeight())
         scrollView.hasVerticalScroller = contentHeight > cappedHeight + 1
-        preferredContentSize = NSSize(width: 280, height: cappedHeight)
+        preferredContentSize = NSSize(width: MacPulseVisualStyle.popoverWidth,
+                                      height: cappedHeight)
     }
 
     func prepareForDisplay(on screen: NSScreen?) {
@@ -665,19 +706,17 @@ final class StatsPopoverController: NSViewController {
     // MARK: - View helpers
 
     private func headerRow(metric: Metric, valueView: NSView?) -> NSStackView {
-        let icon = NSImageView()
-        if let img = NSImage(systemSymbolName: metric.symbolName, accessibilityDescription: metric.displayName) {
-            icon.image = img.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
-        }
-        icon.contentTintColor = .secondaryLabelColor
+        let icon = MacPulseVisualStyle.symbolBadge(
+            metric.symbolName,
+            color: MacPulseVisualStyle.accentColor(for: metric),
+            accessibilityDescription: metric.displayName,
+            size: 30
+        )
         icon.toolTip = metric.displayName
-        icon.setAccessibilityLabel("\(metric.displayName) icon")
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
 
-        let title = NSTextField(labelWithString: metric.displayName.uppercased())
-        title.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
-        title.textColor = .secondaryLabelColor
+        let title = NSTextField(labelWithString: metric.displayName)
+        title.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        title.textColor = .labelColor
         title.setAccessibilityLabel(metric.displayName)
 
         var views: [NSView] = [icon, title, NSView()]
@@ -686,41 +725,55 @@ final class StatsPopoverController: NSViewController {
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 6
+        row.spacing = 9
         return row
     }
 
     private func labelledRow(symbol: String, value: NSTextField) -> NSStackView {
-        let symbolLabel = NSTextField(labelWithString: symbol)
-        symbolLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
-        symbolLabel.textColor = .secondaryLabelColor
-        symbolLabel.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        let title: String
+        let symbolName: String
+        let color: NSColor
         switch symbol {
         case "↓":
-            symbolLabel.toolTip = "Download"
-            symbolLabel.setAccessibilityLabel("Download rate")
+            title = "Download"
+            symbolName = "arrow.down"
+            color = .systemGreen
             value.setAccessibilityLabel("Download rate")
         case "↑":
-            symbolLabel.toolTip = "Upload"
-            symbolLabel.setAccessibilityLabel("Upload rate")
+            title = "Upload"
+            symbolName = "arrow.up"
+            color = .systemGreen
             value.setAccessibilityLabel("Upload rate")
         case "R":
-            symbolLabel.toolTip = "Disk read"
-            symbolLabel.setAccessibilityLabel("Disk read rate")
+            title = "Read"
+            symbolName = "arrow.down"
+            color = .systemOrange
             value.setAccessibilityLabel("Disk read rate")
         case "W":
-            symbolLabel.toolTip = "Disk write"
-            symbolLabel.setAccessibilityLabel("Disk write rate")
+            title = "Write"
+            symbolName = "arrow.up"
+            color = .systemOrange
             value.setAccessibilityLabel("Disk write rate")
         default:
-            break
+            title = symbol
+            symbolName = "circle"
+            color = .secondaryLabelColor
         }
 
-        let stack = NSStackView(views: [symbolLabel, value])
-        stack.orientation = .horizontal
-        stack.spacing = 4
-        stack.alignment = .firstBaseline
-        return stack
+        let icon = MacPulseVisualStyle.symbolBadge(symbolName,
+                                                   color: color,
+                                                   accessibilityDescription: title,
+                                                   size: 24)
+        let caption = NSTextField(labelWithString: title)
+        caption.font = NSFont.systemFont(ofSize: 9.5, weight: .medium)
+        caption.textColor = .secondaryLabelColor
+
+        let labels = stack([caption, value], spacing: 1)
+        let row = NSStackView(views: [icon, labels])
+        row.orientation = .horizontal
+        row.spacing = 8
+        row.alignment = .centerY
+        return row
     }
 
     private func stack(_ views: [NSView], spacing: CGFloat) -> NSStackView {
@@ -731,23 +784,29 @@ final class StatsPopoverController: NSViewController {
         return s
     }
 
-    private func divider() -> NSBox {
-        let box = NSBox()
-        box.boxType = .separator
-        return box
+    private func popoverCard(around content: NSView) -> NSView {
+        MacPulseVisualStyle.card(
+            around: content,
+            insets: NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        )
     }
 
     private func iconButton(symbol: String, accessibilityLabel: String, action: Selector) -> NSButton {
         let button = NSButton()
-        button.bezelStyle = .accessoryBarAction
-        button.isBordered = false
         if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: accessibilityLabel) {
             button.image = img.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
         }
+        button.imagePosition = .imageOnly
         button.target = self
         button.action = action
-        button.contentTintColor = .secondaryLabelColor
+        button.contentTintColor = .labelColor
         button.setAccessibilityLabel(accessibilityLabel)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        MacPulseVisualStyle.configureGlassButton(button)
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 30),
+            button.heightAnchor.constraint(equalToConstant: 30)
+        ])
         return button
     }
 
@@ -755,22 +814,25 @@ final class StatsPopoverController: NSViewController {
 
     private static func makeValueLabel() -> NSTextField {
         let label = NSTextField(labelWithString: "—")
-        label.font = NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
         label.textColor = .labelColor
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        label.setContentHuggingPriority(.required, for: .horizontal)
         return label
     }
 
     private static func makeRateLabel() -> NSTextField {
         let label = NSTextField(labelWithString: "—")
-        label.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
         label.textColor = .labelColor
         return label
     }
 
     private static func makeSecondaryLabel() -> NSTextField {
         let label = NSTextField(labelWithString: "")
-        label.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
         label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
         return label
     }
 }
@@ -802,12 +864,15 @@ final class ProcessRowControl: NSControl {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 4
+        layer?.cornerRadius = 8
+        if #available(macOS 10.15, *) {
+            layer?.cornerCurve = .continuous
+        }
         setAccessibilityElement(true)
         setAccessibilityLabel("Process")
         setAccessibilityHelp("Open process actions")
 
-        nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        nameLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
         nameLabel.textColor = .labelColor
         nameLabel.lineBreakMode = .byTruncatingMiddle
         nameLabel.cell?.usesSingleLineMode = true
@@ -833,9 +898,9 @@ final class ProcessRowControl: NSControl {
         addSubview(chevron)
 
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 20),
+            heightAnchor.constraint(equalToConstant: 26),
 
-            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             cpuLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 8),
@@ -843,7 +908,7 @@ final class ProcessRowControl: NSControl {
             cpuLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
             chevron.leadingAnchor.constraint(equalTo: cpuLabel.trailingAnchor, constant: 4),
-            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 10)
         ])
@@ -865,7 +930,7 @@ final class ProcessRowControl: NSControl {
 
     override func mouseEntered(with event: NSEvent) {
         guard group != nil else { return }
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
     }
 
     override func mouseExited(with event: NSEvent) {

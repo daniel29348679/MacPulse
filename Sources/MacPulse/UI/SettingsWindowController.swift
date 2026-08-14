@@ -29,13 +29,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 600),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 760),
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "MacPulse Settings"
         window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 520, height: 560)
+        window.tabbingMode = .disallowed
         // Always surface on the user's current Space, not the one where the
         // window was last shown — important for menu-bar apps where the user
         // expects "Settings" to follow them across desktops.
@@ -60,11 +62,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Layout
 
     private func buildContentView() -> NSView {
+        let brandIcon = MacPulseVisualStyle.symbolBadge(
+            "waveform.path.ecg",
+            color: .controlAccentColor,
+            accessibilityDescription: "MacPulse",
+            size: 42
+        )
         let title = NSTextField(labelWithString: "MacPulse")
-        title.font = NSFont.systemFont(ofSize: 20, weight: .bold)
+        title.font = NSFont.systemFont(ofSize: 24, weight: .bold)
 
-        let subtitle = NSTextField(labelWithString: "A tiny native macOS system monitor.")
-        subtitle.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        let subtitle = NSTextField(labelWithString: "A clear, live view of your Mac.")
+        subtitle.font = NSFont.systemFont(ofSize: 11.5, weight: .regular)
         subtitle.textColor = .secondaryLabelColor
 
         let titleStack = NSStackView(views: [title, subtitle])
@@ -72,15 +80,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         titleStack.alignment = .leading
         titleStack.spacing = 2
 
-        // 更新間隔
-        let intervalLabel = sectionTitle("UPDATE INTERVAL")
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        let headerVersion = NSTextField(labelWithString: "v\(version)")
+        headerVersion.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        headerVersion.textColor = .tertiaryLabelColor
+
+        let header = NSStackView(views: [brandIcon, titleStack, NSView(), headerVersion])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 11
+
+        // Monitoring cadence
         let labels = Settings.allowedIntervals.map(Settings.intervalLabel)
         intervalSegment = NSSegmentedControl(labels: labels, trackingMode: .selectOne, target: self, action: #selector(intervalChanged(_:)))
         intervalSegment.segmentStyle = .rounded
         intervalSegment.translatesAutoresizingMaskIntoConstraints = false
+        intervalSegment.widthAnchor.constraint(equalToConstant: 200).isActive = true
 
-        // Sparkline window
-        let sparklineLabel = sectionTitle("CHART HISTORY WINDOW")
         let sparkLabels = Settings.allowedSparklineWindows.map(Settings.sparklineWindowLabel)
         sparklineWindowSegment = NSSegmentedControl(labels: sparkLabels,
                                                     trackingMode: .selectOne,
@@ -88,9 +104,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                                                     action: #selector(sparklineWindowChanged(_:)))
         sparklineWindowSegment.segmentStyle = .rounded
         sparklineWindowSegment.translatesAutoresizingMaskIntoConstraints = false
+        sparklineWindowSegment.widthAnchor.constraint(equalToConstant: 200).isActive = true
 
-        // Top processes count
-        let topProcessLabel = sectionTitle("TOP PROCESSES TO SHOW")
         let topProcessLabels = Settings.allowedTopProcessCounts.map { "\($0)" }
         topProcessSegment = NSSegmentedControl(labels: topProcessLabels,
                                                trackingMode: .selectOne,
@@ -98,13 +113,43 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                                                action: #selector(topProcessCountChanged(_:)))
         topProcessSegment.segmentStyle = .rounded
         topProcessSegment.translatesAutoresizingMaskIntoConstraints = false
+        topProcessSegment.widthAnchor.constraint(equalToConstant: 200).isActive = true
+
+        let intervalRow = preferenceRow(
+            symbol: "timer",
+            title: "Update Interval",
+            detail: "How often MacPulse refreshes live readings.",
+            color: .systemBlue,
+            control: intervalSegment
+        )
+        let historyRow = preferenceRow(
+            symbol: "chart.xyaxis.line",
+            title: "Chart History",
+            detail: "The time range kept in each sparkline.",
+            color: .systemTeal,
+            control: sparklineWindowSegment
+        )
+        let processesRow = preferenceRow(
+            symbol: "list.number",
+            title: "Top Processes",
+            detail: "Number of processes shown inside the CPU card.",
+            color: .systemOrange,
+            control: topProcessSegment
+        )
+        let monitoringContent = fullWidthStack(
+            [intervalRow, divider(), historyRow, divider(), processesRow],
+            spacing: 10
+        )
+        let monitoringCard = settingsCard(title: "Monitoring",
+                                          symbol: "speedometer",
+                                          color: .systemBlue,
+                                          content: monitoringContent)
 
         // Menu bar metrics
-        let menuBarLabel = sectionTitle("SHOW IN MENU BAR")
         let menuBarStack = NSStackView()
         menuBarStack.orientation = .vertical
         menuBarStack.alignment = .leading
-        menuBarStack.spacing = 6
+        menuBarStack.spacing = 7
         for metric in Metric.allCases {
             let cb = checkbox(for: metric,
                               scope: "menu bar",
@@ -114,11 +159,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
 
         // Popover metrics
-        let popoverLabel = sectionTitle("SHOW IN POPOVER")
         let popoverStack = NSStackView()
         popoverStack.orientation = .vertical
         popoverStack.alignment = .leading
-        popoverStack.spacing = 6
+        popoverStack.spacing = 7
         for metric in Metric.allCases {
             let cb = checkbox(for: metric,
                               scope: "popover",
@@ -127,99 +171,219 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             popoverStack.addArrangedSubview(cb)
         }
 
+        let menuBarColumn = metricColumn(title: "Menu Bar",
+                                         symbol: "menubar.rectangle",
+                                         content: menuBarStack)
+        let popoverColumn = metricColumn(title: "Popover",
+                                         symbol: "rectangle.on.rectangle",
+                                         content: popoverStack)
         let twoColumns = NSStackView(views: [
-            wrap(label: menuBarLabel, content: menuBarStack),
-            wrap(label: popoverLabel, content: popoverStack)
+            menuBarColumn,
+            popoverColumn
         ])
         twoColumns.orientation = .horizontal
         twoColumns.alignment = .top
         twoColumns.distribution = .fillEqually
-        twoColumns.spacing = 24
+        twoColumns.spacing = 28
+        let visibilityCard = settingsCard(title: "Visible Metrics",
+                                          symbol: "eye",
+                                          color: .systemPurple,
+                                          content: twoColumns)
 
         // Startup
-        let startupLabel = sectionTitle("STARTUP")
-        launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch MacPulse at login",
+        launchAtLoginCheckbox = NSButton(checkboxWithTitle: "",
                                          target: self,
                                          action: #selector(launchAtLoginToggled(_:)))
+        launchAtLoginCheckbox.setAccessibilityLabel("Launch MacPulse at login")
+        let startupRow = preferenceRow(
+            symbol: "power",
+            title: "Launch at Login",
+            detail: "Start MacPulse automatically when you sign in.",
+            color: .systemGreen,
+            control: launchAtLoginCheckbox
+        )
 
         // Updates
-        let updatesLabel = sectionTitle("UPDATES")
         updateButton = NSButton(title: "Check for Updates", target: self, action: #selector(updateButtonClicked))
-        updateButton.bezelStyle = .rounded
+        updateButton.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath",
+                                     accessibilityDescription: nil)
+        updateButton.imagePosition = .imageLeading
+        updateButton.imageHugsTitle = true
+        MacPulseVisualStyle.configureGlassButton(updateButton, primary: true, controlSize: .large)
+        updateButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         updateStatusLabel = NSTextField(labelWithString: "")
-        updateStatusLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        updateStatusLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .regular)
         updateStatusLabel.textColor = .secondaryLabelColor
         updateStatusLabel.lineBreakMode = .byWordWrapping
         updateStatusLabel.maximumNumberOfLines = 2
 
-        let updateRow = NSStackView(views: [updateButton, updateStatusLabel])
+        let updateText = NSStackView(views: [
+            label("Software Update", size: 11.5, weight: .semibold, color: .labelColor),
+            updateStatusLabel
+        ])
+        updateText.orientation = .vertical
+        updateText.alignment = .leading
+        updateText.spacing = 2
+        updateText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let updateIcon = MacPulseVisualStyle.symbolBadge("arrow.down.app",
+                                                         color: .systemIndigo,
+                                                         accessibilityDescription: "Software Update",
+                                                         size: 28)
+        let updateRow = NSStackView(views: [updateIcon, updateText, NSView(), updateButton])
         updateRow.orientation = .horizontal
         updateRow.alignment = .centerY
         updateRow.spacing = 10
 
+        let generalContent = fullWidthStack([startupRow, divider(), updateRow], spacing: 10)
+        let generalCard = settingsCard(title: "General",
+                                       symbol: "gearshape",
+                                       color: .systemGreen,
+                                       content: generalContent)
+
         // Footer
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         let versionLabel = NSTextField(labelWithString: "v\(version) · MIT License")
-        versionLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        versionLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .regular)
         versionLabel.textColor = .tertiaryLabelColor
 
         let repoLink = NSButton(title: "View on GitHub", target: self, action: #selector(openRepo))
-        repoLink.bezelStyle = .accessoryBarAction
-        repoLink.isBordered = false
-        repoLink.contentTintColor = .controlAccentColor
-        repoLink.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        repoLink.image = NSImage(systemSymbolName: "arrow.up.right.square",
+                                 accessibilityDescription: nil)
+        repoLink.imagePosition = .imageLeading
+        repoLink.imageHugsTitle = true
+        MacPulseVisualStyle.configureGlassButton(repoLink)
 
         let footer = NSStackView(views: [versionLabel, NSView(), repoLink])
         footer.orientation = .horizontal
         footer.alignment = .centerY
 
-        let mainStack = NSStackView(views: [
-            titleStack,
-            divider(),
-            wrap(label: intervalLabel, content: intervalSegment),
-            wrap(label: sparklineLabel, content: sparklineWindowSegment),
-            wrap(label: topProcessLabel, content: topProcessSegment),
-            divider(),
-            twoColumns,
-            divider(),
-            wrap(label: startupLabel, content: launchAtLoginCheckbox),
-            wrap(label: updatesLabel, content: updateRow),
-            divider(),
-            footer
-        ])
+        let rootViews: [NSView] = [header, monitoringCard, visibilityCard, generalCard, footer]
+        let mainStack = NSStackView(views: rootViews)
         mainStack.orientation = .vertical
         mainStack.alignment = .leading
-        mainStack.spacing = 14
-        mainStack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
+        mainStack.spacing = 12
+        mainStack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 18, right: 20)
         mainStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 600))
-        container.addSubview(mainStack)
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.verticalScrollElasticity = .allowed
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        let document = SettingsDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(mainStack)
+        scrollView.documentView = document
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 760))
+        container.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            mainStack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            mainStack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            mainStack.topAnchor.constraint(equalTo: container.topAnchor),
-            mainStack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            intervalSegment.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48),
-            sparklineWindowSegment.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48),
-            topProcessSegment.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48),
-            footer.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -48)
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            document.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            document.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
+            document.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+
+            mainStack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            mainStack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            mainStack.topAnchor.constraint(equalTo: document.topAnchor),
+            mainStack.bottomAnchor.constraint(equalTo: document.bottomAnchor)
         ])
+        for view in rootViews {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalTo: mainStack.widthAnchor, constant: -40).isActive = true
+        }
         return container
     }
 
-    private func wrap(label: NSView, content: NSView) -> NSStackView {
-        let s = NSStackView(views: [label, content])
-        s.orientation = .vertical
-        s.alignment = .leading
-        s.spacing = 8
-        return s
+    private func settingsCard(title: String,
+                              symbol: String,
+                              color: NSColor,
+                              content: NSView) -> NSView {
+        let icon = MacPulseVisualStyle.symbolBadge(symbol,
+                                                   color: color,
+                                                   accessibilityDescription: title,
+                                                   size: 28)
+        let titleLabel = label(title, size: 13, weight: .semibold, color: .labelColor)
+        let header = NSStackView(views: [icon, titleLabel, NSView()])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 9
+
+        let body = fullWidthStack([header, content], spacing: 12)
+        return MacPulseVisualStyle.card(around: body)
     }
 
-    private func sectionTitle(_ text: String) -> NSTextField {
+    private func preferenceRow(symbol: String,
+                               title: String,
+                               detail: String,
+                               color: NSColor,
+                               control: NSView) -> NSStackView {
+        let icon = MacPulseVisualStyle.symbolBadge(symbol,
+                                                   color: color,
+                                                   accessibilityDescription: title,
+                                                   size: 28)
+        let titleLabel = label(title, size: 11.5, weight: .semibold, color: .labelColor)
+        let detailLabel = label(detail, size: 9.5, weight: .regular, color: .secondaryLabelColor)
+        detailLabel.maximumNumberOfLines = 2
+        detailLabel.lineBreakMode = .byWordWrapping
+
+        let labels = NSStackView(views: [titleLabel, detailLabel])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        control.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let row = NSStackView(views: [icon, labels, NSView(), control])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        return row
+    }
+
+    private func metricColumn(title: String,
+                              symbol: String,
+                              content: NSView) -> NSStackView {
+        let icon = MacPulseVisualStyle.symbolBadge(symbol,
+                                                   color: .systemPurple,
+                                                   accessibilityDescription: title,
+                                                   size: 24)
+        let titleLabel = label(title, size: 11.5, weight: .semibold, color: .labelColor)
+        let header = NSStackView(views: [icon, titleLabel, NSView()])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 8
+
+        return fullWidthStack([header, content], spacing: 10)
+    }
+
+    private func fullWidthStack(_ views: [NSView], spacing: CGFloat) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = spacing
+        for view in views {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return stack
+    }
+
+    private func label(_ text: String,
+                       size: CGFloat,
+                       weight: NSFont.Weight,
+                       color: NSColor) -> NSTextField {
         let label = NSTextField(labelWithString: text)
-        label.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
-        label.textColor = .secondaryLabelColor
+        label.font = NSFont.systemFont(ofSize: size, weight: weight)
+        label.textColor = color
         return label
     }
 
@@ -232,6 +396,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func checkbox(for metric: Metric, scope: String, action: Selector) -> NSButton {
         let button = NSButton(checkboxWithTitle: metric.displayName, target: self, action: action)
         button.identifier = NSUserInterfaceItemIdentifier(metric.rawValue)
+        button.controlSize = .regular
         button.toolTip = "Show \(metric.displayName) in \(scope)"
         button.setAccessibilityLabel("Show \(metric.displayName) in \(scope)")
         return button
@@ -421,4 +586,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // Settings 視窗收起時不要結束 app（accessory 模式預設不會，但保險）
     }
+}
+
+private final class SettingsDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }

@@ -8,6 +8,15 @@ enum Screenshots {
         let fm = FileManager.default
         try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
 
+        // Optional appearance override for visual regression checks.
+        let previousAppearance = NSApp.appearance
+        switch ProcessInfo.processInfo.environment["MACPULSE_SCREENSHOT_APPEARANCE"] {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark":  NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
+        defer { NSApp.appearance = previousAppearance }
+
         // Snapshot + override UserDefaults so user-side preferences
         // (e.g. a 10-min sparkline window) don't distort the marketing shot.
         // Restored at the end so running this on your live install is harmless.
