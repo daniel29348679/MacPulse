@@ -46,9 +46,13 @@ enum MacPulseVisualStyle {
                                      controlSize: NSControl.ControlSize = .regular) {
         button.isBordered = true
         button.controlSize = controlSize
-        if #available(macOS 26.0, *) {
-            button.bezelStyle = .glass
-            button.tintProminence = primary ? .primary : .secondary
+        let tintSelector = NSSelectorFromString("setTintProminence:")
+        if button.responds(to: tintSelector),
+           let glassStyle = NSButton.BezelStyle(rawValue: 16) {
+            // Keep release builds compatible with older SDKs while opting in
+            // to the public macOS 26 glass bezel style at runtime.
+            button.bezelStyle = glassStyle
+            button.setValue(primary ? 2 : 3, forKey: "tintProminence")
         } else {
             button.bezelStyle = button.title.isEmpty ? .circular : .rounded
         }
