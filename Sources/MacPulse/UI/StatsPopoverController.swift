@@ -38,6 +38,7 @@ final class StatsPopoverController: NSViewController {
         return stack
     }()
     private var emptyStateCard: NSView?
+    private var statusPairRow: NSStackView?
 
     // CPU
     private let cpuValueLabel = StatsPopoverController.makeValueLabel()
@@ -275,25 +276,35 @@ final class StatsPopoverController: NSViewController {
         tempValueRow.spacing = 6
         tempValueRow.alignment = .centerY
 
-        let tempHeader = headerRow(metric: .temperature, valueView: tempValueRow)
-        let tempSection = stack([tempHeader, tempBreakdown], spacing: 7)
+        let tempHeader = compactHeaderRow(metric: .temperature)
+        let tempSection = stack([tempHeader, tempValueRow, tempBreakdown], spacing: 5)
         tempHeader.widthAnchor.constraint(equalTo: tempSection.widthAnchor).isActive = true
-        sections[.temperature] = popoverCard(around: tempSection)
+        let tempCard = popoverCard(around: tempSection)
+        sections[.temperature] = tempCard
 
         // Power
-        let powerHeader = headerRow(metric: .power, valueView: powerLabel)
-        let powerSection = stack([powerHeader, powerBreakdown], spacing: 7)
+        let powerHeader = compactHeaderRow(metric: .power)
+        let powerSection = stack([powerHeader, powerLabel, powerBreakdown], spacing: 5)
         powerHeader.widthAnchor.constraint(equalTo: powerSection.widthAnchor).isActive = true
-        sections[.power] = popoverCard(around: powerSection)
+        let powerCard = popoverCard(around: powerSection)
+        sections[.power] = powerCard
+
+        let statusPair = NSStackView(views: [tempCard, powerCard])
+        statusPair.orientation = .horizontal
+        statusPair.alignment = .top
+        statusPair.distribution = .fillEqually
+        statusPair.spacing = 8
+        statusPairRow = statusPair
 
         // Compose the content layer as semantic material cards. Glass remains
         // reserved for the popover surface and top-level action buttons.
         var rootSubviews: [NSView] = [header]
-        for metric in Metric.allCases {
+        for metric in Metric.allCases where metric != .temperature && metric != .power {
             if let section = sections[metric] {
                 rootSubviews.append(section)
             }
         }
+        rootSubviews.append(statusPair)
 
         let emptyCard = popoverCard(around: emptyStateView)
         emptyStateCard = emptyCard
@@ -563,6 +574,7 @@ final class StatsPopoverController: NSViewController {
         for (metric, view) in sections {
             view.isHidden = !visible.contains(metric)
         }
+        statusPairRow?.isHidden = !visible.contains(.temperature) && !visible.contains(.power)
         emptyStateCard?.isHidden = !visible.isEmpty
         adjustPreferredSize()
     }
@@ -726,6 +738,28 @@ final class StatsPopoverController: NSViewController {
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 9
+        return row
+    }
+
+    private func compactHeaderRow(metric: Metric) -> NSStackView {
+        let icon = MacPulseVisualStyle.symbolBadge(
+            metric.symbolName,
+            color: MacPulseVisualStyle.accentColor(for: metric),
+            accessibilityDescription: metric.displayName,
+            size: 24
+        )
+        icon.toolTip = metric.displayName
+
+        let title = NSTextField(labelWithString: metric.displayName)
+        title.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+        title.textColor = .labelColor
+        title.lineBreakMode = .byTruncatingTail
+        title.setAccessibilityLabel(metric.displayName)
+
+        let row = NSStackView(views: [icon, title, NSView()])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
         return row
     }
 
