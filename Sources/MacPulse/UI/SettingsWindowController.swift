@@ -8,7 +8,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var popoverCheckboxes: [Metric: NSButton] = [:]
     private var intervalSegment: NSSegmentedControl!
     private var sparklineWindowSegment: NSSegmentedControl!
-    private var topProcessSegment: NSSegmentedControl!
     private var launchAtLoginCheckbox: NSButton!
 
     // Update UI
@@ -106,15 +105,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sparklineWindowSegment.translatesAutoresizingMaskIntoConstraints = false
         sparklineWindowSegment.widthAnchor.constraint(equalToConstant: 200).isActive = true
 
-        let topProcessLabels = Settings.allowedTopProcessCounts.map { "\($0)" }
-        topProcessSegment = NSSegmentedControl(labels: topProcessLabels,
-                                               trackingMode: .selectOne,
-                                               target: self,
-                                               action: #selector(topProcessCountChanged(_:)))
-        topProcessSegment.segmentStyle = .rounded
-        topProcessSegment.translatesAutoresizingMaskIntoConstraints = false
-        topProcessSegment.widthAnchor.constraint(equalToConstant: 200).isActive = true
-
         let intervalRow = preferenceRow(
             symbol: "timer",
             title: "Update Interval",
@@ -129,15 +119,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             color: .systemTeal,
             control: sparklineWindowSegment
         )
-        let processesRow = preferenceRow(
-            symbol: "list.number",
-            title: "Top Processes",
-            detail: "Number of processes shown inside the CPU and Memory cards.",
-            color: .systemOrange,
-            control: topProcessSegment
-        )
         let monitoringContent = fullWidthStack(
-            [intervalRow, divider(), historyRow, divider(), processesRow],
+            [intervalRow, divider(), historyRow],
             spacing: 10
         )
         let monitoringCard = settingsCard(title: "Monitoring",
@@ -416,12 +399,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         Settings.shared.sparklineWindowSeconds = Settings.allowedSparklineWindows[idx]
     }
 
-    @objc private func topProcessCountChanged(_ sender: NSSegmentedControl) {
-        let idx = sender.selectedSegment
-        guard idx >= 0, idx < Settings.allowedTopProcessCounts.count else { return }
-        Settings.shared.topProcessCount = Settings.allowedTopProcessCounts[idx]
-    }
-
     @objc private func menuBarToggled(_ sender: NSButton) {
         guard let raw = sender.identifier?.rawValue, let metric = Metric(rawValue: raw) else { return }
         Settings.shared.toggleMenuBar(metric)
@@ -554,11 +531,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         if let idx = Settings.allowedSparklineWindows.firstIndex(of: window) {
             sparklineWindowSegment.selectedSegment = idx
         }
-        let topCount = Settings.shared.topProcessCount
-        if let idx = Settings.allowedTopProcessCounts.firstIndex(of: topCount) {
-            topProcessSegment.selectedSegment = idx
-        }
-
         let menuBar = Settings.shared.menuBarMetrics
         let popover = Settings.shared.popoverMetrics
         for (metric, cb) in menuBarCheckboxes {

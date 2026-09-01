@@ -6,8 +6,6 @@ final class SettingsTests {
         MacPulseTestCase("Settings labels allowed values", testLabelsForAllowedValues),
         MacPulseTestCase("Settings rejects unsupported update intervals", testUpdateIntervalRejectsUnsupportedValues),
         MacPulseTestCase("Settings rejects unsupported sparkline windows", testSparklineWindowRejectsUnsupportedValues),
-        MacPulseTestCase("Settings rejects unsupported top process counts", testTopProcessCountRejectsUnsupportedValues),
-        MacPulseTestCase("Settings process disclosures persist independently", testProcessDisclosuresPersistIndependently),
         MacPulseTestCase("Settings metric toggles round-trip", testMetricTogglesRoundTripThroughDefaults)
     ]
 
@@ -53,27 +51,6 @@ final class SettingsTests {
 
         suite.settings.sparklineWindowSeconds = 90
         try expectEqual(suite.settings.sparklineWindowSeconds, 120)
-    }
-
-    static func testTopProcessCountRejectsUnsupportedValues() throws {
-        let suite = SettingsTests()
-        try expectEqual(suite.settings.topProcessCount, Settings.defaultTopProcessCount)
-
-        suite.settings.topProcessCount = 10
-        try expectEqual(suite.settings.topProcessCount, 10)
-
-        suite.settings.topProcessCount = 9
-        try expectEqual(suite.settings.topProcessCount, 10)
-    }
-
-    static func testProcessDisclosuresPersistIndependently() throws {
-        let suite = SettingsTests()
-        try expect(!suite.settings.processesCollapsed)
-        try expect(!suite.settings.memoryProcessesCollapsed)
-
-        suite.settings.memoryProcessesCollapsed = true
-        try expect(!suite.settings.processesCollapsed)
-        try expect(suite.settings.memoryProcessesCollapsed)
     }
 
     static func testMetricTogglesRoundTripThroughDefaults() throws {

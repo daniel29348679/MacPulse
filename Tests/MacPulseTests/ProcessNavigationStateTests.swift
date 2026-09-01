@@ -5,8 +5,9 @@ enum ProcessNavigationStateTests {
     static let tests: [MacPulseTestCase] = [
         MacPulseTestCase("Process navigation pushes and returns through pages", testPushAndBack),
         MacPulseTestCase("Process navigation ignores duplicate destination", testDuplicatePush),
-        MacPulseTestCase("Process navigation reset clears resource route", testReset),
-        MacPulseTestCase("Process entry identity survives metrics update and rejects PID reuse", testStableEntryIdentity)
+        MacPulseTestCase("Process navigation reset clears route", testReset),
+        MacPulseTestCase("Process entry identity survives metrics update and rejects PID reuse", testStableEntryIdentity),
+        MacPulseTestCase("Process sorting supports CPU RAM disk and name", testSorting)
     ]
 
     private static func identity(_ seconds: Int64) -> ProcessMonitor.ProcessIdentity {
@@ -25,41 +26,30 @@ enum ProcessNavigationStateTests {
               identity: identity)
     }
 
-    private static func group(_ entry: ProcessMonitor.Entry) -> ProcessMonitor.Group {
-        .init(name: entry.name,
-              totalCpuPercent: entry.cpuPercent,
-              totalMemoryBytes: entry.memoryBytes,
-              entries: [entry])
-    }
-
     static func testPushAndBack() throws {
         let process = entry(pid: 42, identity: identity(1), cpu: 10, memory: 100)
         var state = ProcessNavigationState()
         try expect(state.isAtOverview)
-        try expect(state.push(.list(.cpu)))
-        try expect(state.push(.group(.cpu, name: "worker")))
-        try expect(state.push(.entry(.cpu, groupName: "worker", id: ProcessEntryID(process))))
-        try expectEqual(state.path.count, 3)
+        try expect(state.push(.processes))
+        try expect(state.push(.entry(id: ProcessEntryID(process), metric: .cpu)))
+        try expectEqual(state.path.count, 2)
 
         _ = state.goBack()
-        try expectEqual(state.current, .group(.cpu, name: "worker"))
-        _ = state.goBack()
-        try expectEqual(state.current, .list(.cpu))
+        try expectEqual(state.current, .processes)
         _ = state.goBack()
         try expect(state.isAtOverview)
     }
 
     static func testDuplicatePush() throws {
         var state = ProcessNavigationState()
-        try expect(state.push(.list(.memory)))
-        try expect(!state.push(.list(.memory)))
+        try expect(state.push(.processes))
+        try expect(!state.push(.processes))
         try expectEqual(state.path.count, 1)
     }
 
     static func testReset() throws {
         var state = ProcessNavigationState()
-        _ = state.push(.list(.memory))
-        _ = state.push(.group(.memory, name: "worker"))
+        _ = state.push(.processes)
         state.reset()
         try expect(state.isAtOverview)
         try expectEqual(state.path.count, 0)
@@ -71,12 +61,34 @@ enum ProcessNavigationStateTests {
         let id = ProcessEntryID(original)
 
         let updated = entry(pid: 42, identity: originalIdentity, cpu: 9, memory: 900)
-        let resolved = id.resolve(in: [group(updated)], groupName: "worker")
+        let resolved = id.resolve(in: [updated])
         try expectEqual(resolved?.cpuPercent, 9)
         try expectEqual(resolved?.memoryBytes, 900)
 
         let reusedPID = entry(pid: 42, identity: identity(99), cpu: 50, memory: 5_000)
-        try expect(id.resolve(in: [group(reusedPID)], groupName: "worker") == nil,
+        try expect(id.resolve(in: [reusedPID]) == nil,
                    "a reused PID must not be rebound to the open process page")
+    }
+
+    static func testSorting() throws {
+        let first = ProcessMonitor.Entry(pid: 1,
+                                         name: "Zulu",
+                                         command: "/bin/zulu",
+                                         cpuPercent: 2,
+                                         memoryBytes: 300,
+                                         diskBytesPerSecond: 40,
+                                         identity: identity(1))
+        let second = ProcessMonitor.Entry(pid: 2,
+                                          name: "Alpha",
+                                          command: "/bin/alpha",
+                                          cpuPercent: 8,
+                                          memoryBytes: 100,
+                                          diskBytesPerSecond: 70,
+                                          identity: identity(2))
+        let values = [first, second]
+        try expectEqual(ProcessSortMetric.name.sorted(values, ascending: true).map(\.pid), [2, 1])
+        try expectEqual(ProcessSortMetric.cpu.sorted(values, ascending: false).map(\.pid), [2, 1])
+        try expectEqual(ProcessSortMetric.memory.sorted(values, ascending: false).map(\.pid), [1, 2])
+        try expectEqual(ProcessSortMetric.disk.sorted(values, ascending: false).map(\.pid), [2, 1])
     }
 }

@@ -22,9 +22,10 @@ No Electron. No background daemon. Just a single Swift binary that sits quietly 
 
 | | |
 |---|---|
-| **CPU** | total %, with user / system / idle breakdown, rolling sparkline, and an actionable top-process list |
+| **CPU** | total %, with user / system / idle breakdown and a rolling sparkline |
 | **GPU** | device utilization %, renderer / tiler breakdown, and active unified-memory use |
-| **Memory** | % and `used / total` GB, plus a collapsible resident-RAM process list with Quit / Force Kill actions |
+| **Memory** | % and `used / total` GB with swap usage and a rolling sparkline |
+| **Processes** | full-page, live process table sortable by CPU, resident RAM, or disk I/O, with Quit / Force Kill actions |
 | **Network** | live ↓ / ↑ rates across all physical interfaces — `lo`, `utun`, `awdl`, `bridge` excluded |
 | **Disk** | read / write bytes per second across every `IOBlockStorageDriver` device |
 | **Temperature** | live CPU °C from on-die thermal sensors; falls back to Apple's thermal-pressure level |
@@ -101,7 +102,7 @@ The first build takes ~30s; after that startup is instant.
 | Disk        | IOKit `IOBlockStorageDriver.Statistics` — diff of `Bytes (Read)` / `Bytes (Write)`     |
 | Temperature | `IOHIDEventSystemClient` — enumerate `kHIDPage_AppleVendor / TemperatureSensor` services |
 | Power       | IOKit `AppleSmartBattery` registry entry — `Voltage × Amperage`, plus `IsCharging` / `ExternalConnected` for direction |
-| Processes   | `libproc` task info — per-PID CPU time and resident memory, grouped by display name                |
+| Processes   | `libproc` task and rusage info — per-PID CPU time, resident memory, and disk I/O                  |
 
 > **About the temperature reading.** Apple does not expose CPU °C through any public API.
 > We use `IOHIDEventSystemClient` (private but linkable from `IOKit.framework`) to enumerate

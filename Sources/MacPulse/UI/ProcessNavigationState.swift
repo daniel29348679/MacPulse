@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stable identity used by process-detail routes. CPU and RAM values change on
+/// Stable identity used by process-detail routes. Live usage values change on
 /// every sample, so the full `Entry` must never be used as a navigation key.
 struct ProcessEntryID: Hashable {
     let pid: Int32
@@ -11,27 +11,56 @@ struct ProcessEntryID: Hashable {
         identity = entry.identity
     }
 
-    func resolve(in groups: [ProcessMonitor.Group], groupName: String) -> ProcessMonitor.Entry? {
-        groups.first(where: { $0.name == groupName })?
-            .entries.first(where: { $0.pid == pid && $0.identity == identity })
+    func resolve(in entries: [ProcessMonitor.Entry]) -> ProcessMonitor.Entry? {
+        entries.first { $0.pid == pid && $0.identity == identity }
+    }
+}
+
+enum ProcessSortMetric: Hashable, CaseIterable {
+    case name
+    case cpu
+    case memory
+    case disk
+
+    var label: String {
+        switch self {
+        case .name: return "Name"
+        case .cpu: return "CPU"
+        case .memory: return "RAM"
+        case .disk: return "I/O"
+        }
+    }
+
+    func sorted(_ entries: [ProcessMonitor.Entry], ascending: Bool) -> [ProcessMonitor.Entry] {
+        entries.sorted { lhs, rhs in
+            let orderedBefore: Bool
+            let tied: Bool
+            switch self {
+            case .name:
+                let comparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+                orderedBefore = comparison == .orderedAscending
+                tied = comparison == .orderedSame
+            case .cpu:
+                orderedBefore = lhs.cpuPercent < rhs.cpuPercent
+                tied = lhs.cpuPercent == rhs.cpuPercent
+            case .memory:
+                orderedBefore = lhs.memoryBytes < rhs.memoryBytes
+                tied = lhs.memoryBytes == rhs.memoryBytes
+            case .disk:
+                orderedBefore = lhs.diskBytesPerSecond < rhs.diskBytesPerSecond
+                tied = lhs.diskBytesPerSecond == rhs.diskBytesPerSecond
+            }
+            if tied { return lhs.pid < rhs.pid }
+            return ascending ? orderedBefore : !orderedBefore
+        }
     }
 }
 
 /// Small, UI-independent navigation state for the process browser.
 struct ProcessNavigationState {
     enum Route: Hashable {
-        case list(ProcessMonitor.Resource)
-        case group(ProcessMonitor.Resource, name: String)
-        case entry(ProcessMonitor.Resource, groupName: String, id: ProcessEntryID)
-
-        var resource: ProcessMonitor.Resource {
-            switch self {
-            case .list(let resource),
-                 .group(let resource, _),
-                 .entry(let resource, _, _):
-                return resource
-            }
-        }
+        case processes
+        case entry(id: ProcessEntryID, metric: ProcessSortMetric)
     }
 
     private(set) var path: [Route] = []

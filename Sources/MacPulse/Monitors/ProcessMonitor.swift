@@ -30,6 +30,7 @@ final class ProcessMonitor {
         let command: String
         let cpuPercent: Double
         let memoryBytes: UInt64
+        let diskBytesPerSecond: Double
         let identity: ProcessIdentity
 
         init(pid: Int32,
@@ -37,12 +38,14 @@ final class ProcessMonitor {
              command: String,
              cpuPercent: Double,
              memoryBytes: UInt64 = 0,
+             diskBytesPerSecond: Double = 0,
              identity: ProcessIdentity) {
             self.pid = pid
             self.name = name
             self.command = command
             self.cpuPercent = cpuPercent
             self.memoryBytes = memoryBytes
+            self.diskBytesPerSecond = diskBytesPerSecond
             self.identity = identity
         }
     }
@@ -60,6 +63,7 @@ final class ProcessMonitor {
     }
 
     struct Snapshot {
+        let entries: [Entry]
         let cpuGroups: [Group]
         let memoryGroups: [Group]
     }
@@ -74,6 +78,7 @@ final class ProcessMonitor {
         let pid: Int32
         let cumulativeCpuNs: UInt64
         let memoryBytes: UInt64
+        let cumulativeDiskBytes: UInt64
         let identity: ProcessIdentity
         let command: String
         let name: String
@@ -81,12 +86,14 @@ final class ProcessMonitor {
         init(pid: Int32,
              cumulativeCpuNs: UInt64,
              memoryBytes: UInt64 = 0,
+             cumulativeDiskBytes: UInt64 = 0,
              identity: ProcessIdentity,
              command: String,
              name: String) {
             self.pid = pid
             self.cumulativeCpuNs = cumulativeCpuNs
             self.memoryBytes = memoryBytes
+            self.cumulativeDiskBytes = cumulativeDiskBytes
             self.identity = identity
             self.command = command
             self.name = name
@@ -96,7 +103,16 @@ final class ProcessMonitor {
     /// 上一筆樣本，用來算 cumulative CPU 時間的 delta。
     struct PreviousSnapshot: Equatable {
         let cumulativeCpuNs: UInt64
+        let cumulativeDiskBytes: UInt64
         let identity: ProcessIdentity
+
+        init(cumulativeCpuNs: UInt64,
+             cumulativeDiskBytes: UInt64 = 0,
+             identity: ProcessIdentity) {
+            self.cumulativeCpuNs = cumulativeCpuNs
+            self.cumulativeDiskBytes = cumulativeDiskBytes
+            self.identity = identity
+        }
     }
 
     private let queue = DispatchQueue(label: "macpulse.process-monitor", qos: .userInitiated)
@@ -131,7 +147,7 @@ final class ProcessMonitor {
         inFlight = true
         queue.async { [weak self] in
             let snapshot = self?.run(limit: cappedLimit)
-                ?? Snapshot(cpuGroups: [], memoryGroups: [])
+                ?? Snapshot(entries: [], cpuGroups: [], memoryGroups: [])
             DispatchQueue.main.async {
                 self?.inFlight = false
                 completion(snapshot)
@@ -174,11 +190,12 @@ final class ProcessMonitor {
         newPrev.reserveCapacity(raw.count)
         for s in raw {
             newPrev[s.pid] = PreviousSnapshot(cumulativeCpuNs: s.cumulativeCpuNs,
+                                              cumulativeDiskBytes: s.cumulativeDiskBytes,
                                               identity: s.identity)
         }
         previousSnapshots = newPrev
         previousMach = nowMach
-        return Snapshot(cpuGroups: cpuGroups, memoryGroups: memoryGroups)
+        return Snapshot(entries: entries, cpuGroups: cpuGroups, memoryGroups: memoryGroups)
     }
 
     // MARK: - Pure compute (testable)
@@ -197,6 +214,7 @@ final class ProcessMonitor {
         entries.reserveCapacity(currentSamples.count)
         for s in currentSamples {
             let pct: Double
+            let diskRate: Double
             if denom > 0,
                let prev = previousSnapshots[s.pid],
                prev.identity == s.identity,
@@ -206,11 +224,21 @@ final class ProcessMonitor {
             } else {
                 pct = 0
             }
+            if elapsedNs > 0,
+               let prev = previousSnapshots[s.pid],
+               prev.identity == s.identity,
+               s.cumulativeDiskBytes >= prev.cumulativeDiskBytes {
+                diskRate = Double(s.cumulativeDiskBytes - prev.cumulativeDiskBytes)
+                    / (elapsedNs / 1_000_000_000)
+            } else {
+                diskRate = 0
+            }
             entries.append(Entry(pid: s.pid,
                                  name: s.name,
                                  command: s.command,
                                  cpuPercent: pct,
                                  memoryBytes: s.memoryBytes,
+                                 diskBytesPerSecond: diskRate,
                                  identity: s.identity))
         }
         entries.sort { $0.cpuPercent > $1.cpuPercent }
@@ -322,6 +350,7 @@ final class ProcessMonitor {
             samples.append(RawSample(pid: pid,
                                      cumulativeCpuNs: taskStats.cumulativeCpuNs,
                                      memoryBytes: taskStats.memoryBytes,
+                                     cumulativeDiskBytes: taskStats.cumulativeDiskBytes,
                                      identity: identity,
                                      command: command,
                                      name: name))
@@ -330,7 +359,9 @@ final class ProcessMonitor {
         return samples
     }
 
-    private static func taskStats(pid: Int32) -> (cumulativeCpuNs: UInt64, memoryBytes: UInt64)? {
+    private static func taskStats(pid: Int32) -> (cumulativeCpuNs: UInt64,
+                                                  memoryBytes: UInt64,
+                                                  cumulativeDiskBytes: UInt64)? {
         var info = proc_taskinfo()
         let size = MemoryLayout<proc_taskinfo>.size
         let ret = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
@@ -343,7 +374,18 @@ final class ProcessMonitor {
         // 直接當 ns 用會把 CPU% 少算 ~41.7 倍、全部顯示成 0。
         let machUnits = info.pti_total_user &+ info.pti_total_system
         let cumulativeCpuNs = machUnits &* UInt64(machTimebase.numer) / UInt64(machTimebase.denom)
-        return (cumulativeCpuNs, UInt64(info.pti_resident_size))
+        var usage = rusage_info_v2()
+        let rusageResult = withUnsafeMutablePointer(to: &usage) { ptr in
+            proc_pid_rusage(
+                pid,
+                RUSAGE_INFO_V2,
+                UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: rusage_info_t?.self)
+            )
+        }
+        let diskBytes = rusageResult == 0
+            ? usage.ri_diskio_bytesread &+ usage.ri_diskio_byteswritten
+            : 0
+        return (cumulativeCpuNs, UInt64(info.pti_resident_size), diskBytes)
     }
 
     private static func processIdentity(for pid: Int32) -> ProcessIdentity? {

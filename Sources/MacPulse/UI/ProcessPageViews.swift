@@ -2,20 +2,18 @@ import AppKit
 
 protocol ProcessPageUpdating: AnyObject {
     var preferredFocusView: NSView { get }
-    func update(groups: [ProcessMonitor.Group])
+    func update(entries: [ProcessMonitor.Entry])
 }
 
-/// Shared page chrome: a pinned Back button and a scrollable/content area.
+/// Shared page chrome for the full-width process browser.
 class ProcessPageView: NSView {
-    let resource: ProcessMonitor.Resource
     let contentHost = NSView()
     private let backButton = NSButton(title: "Back", target: nil, action: nil)
     var onBack: (() -> Void)?
 
     var preferredFocusView: NSView { backButton }
 
-    init(title: String, resource: ProcessMonitor.Resource) {
-        self.resource = resource
+    init(title: String) {
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         wantsLayer = true
@@ -98,13 +96,9 @@ class ProcessPageView: NSView {
         ])
     }
 
-    @objc private func goBack() {
-        onBack?()
-    }
+    @objc private func goBack() { onBack?() }
 
-    override func cancelOperation(_ sender: Any?) {
-        onBack?()
-    }
+    override func cancelOperation(_ sender: Any?) { onBack?() }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let characters = event.charactersIgnoringModifiers
@@ -118,7 +112,6 @@ class ProcessPageView: NSView {
     }
 }
 
-/// A vertically scrolling page body with standard popover insets.
 private final class ProcessPageScrollView: NSScrollView {
     let contentStack = NSStackView()
     private let document = ProcessPageDocumentView()
@@ -164,225 +157,160 @@ private final class ProcessPageScrollView: NSScrollView {
     }
 }
 
-final class ProcessListPageView: ProcessPageView, ProcessPageUpdating {
+/// Task Manager-style table. Rows stay stable across samples while their live
+/// values update; clicking a column changes the sort order.
+final class ProcessTaskManagerPageView: ProcessPageView, ProcessPageUpdating {
     private let statusLabel = ProcessPageViewFactory.captionLabel()
     private let emptyLabel = ProcessPageViewFactory.emptyLabel("Waiting for process data…")
     private let rowsStack = ProcessPageViewFactory.verticalStack(spacing: 1)
-    private let scroll = ProcessPageScrollView()
+    private let scroll = ProcessPageScrollView(spacing: 7)
     private var rowsCard: NSView!
-    private var orderedNames: [String] = []
-    private var rowsByName: [String: ProcessRowControl] = [:]
-
-    var onSelectGroup: ((ProcessMonitor.Group, NSView) -> Void)?
-
-    init(resource: ProcessMonitor.Resource, groups: [ProcessMonitor.Group]) {
-        super.init(title: "\(resource.label) Processes", resource: resource)
-
-        rowsCard = MacPulseVisualStyle.card(
-            around: rowsStack,
-            insets: NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
-        )
-        scroll.addFullWidthView(statusLabel)
-        scroll.addFullWidthView(rowsCard)
-        scroll.addFullWidthView(emptyLabel)
-        installContent(scroll)
-        update(groups: groups)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func update(groups: [ProcessMonitor.Group]) {
-        let currentByName = Dictionary(uniqueKeysWithValues: groups.map { ($0.name, $0) })
-
-        // Keep surviving rows stable while values update, but remove processes
-        // that have exited so the page always describes the current snapshot.
-        let stale = orderedNames.filter { currentByName[$0] == nil }
-        let protectedStale = Set(stale.filter { rowsByName[$0]?.isInteractionActive == true })
-        for name in stale {
-            if protectedStale.contains(name) {
-                rowsByName[name]?.updateUnavailable(name: name)
-                continue
-            }
-            if let row = rowsByName.removeValue(forKey: name) {
-                rowsStack.removeArrangedSubview(row)
-                row.removeFromSuperview()
-            }
-        }
-        orderedNames.removeAll { currentByName[$0] == nil && !protectedStale.contains($0) }
-
-        for group in groups where rowsByName[group.name] == nil {
-            guard orderedNames.count < ProcessMonitor.hardLimit else { break }
-            let row = ProcessRowControl(resource: resource)
-            row.onClick = { [weak self] group, anchor in
-                self?.onSelectGroup?(group, anchor)
-            }
-            rowsStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
-            rowsByName[group.name] = row
-            orderedNames.append(group.name)
-        }
-
-        let desiredNames = groups.prefix(ProcessMonitor.hardLimit).map(\.name)
-        if desiredNames != orderedNames,
-           protectedStale.isEmpty,
-           !rowsByName.values.contains(where: { $0.isPointerInteractionActive }) {
-            for row in rowsStack.arrangedSubviews {
-                rowsStack.removeArrangedSubview(row)
-            }
-            for name in desiredNames {
-                if let row = rowsByName[name] { rowsStack.addArrangedSubview(row) }
-            }
-            orderedNames = desiredNames
-        }
-
-        for name in orderedNames {
-            if let group = currentByName[name] {
-                rowsByName[name]?.update(group)
-            } else {
-                rowsByName[name]?.updateUnavailable(name: name)
-            }
-        }
-
-        let processCount = groups.reduce(0) { $0 + $1.count }
-        if groups.isEmpty {
-            statusLabel.stringValue = "Process usage updates live"
-        } else if groups.count == ProcessMonitor.hardLimit {
-            statusLabel.stringValue = "Top \(ProcessMonitor.hardLimit) groups · \(processCount) processes · Updates live"
-        } else if processCount == groups.count {
-            statusLabel.stringValue = "\(processCount) \(processCount == 1 ? "process" : "processes") · Updates live"
-        } else {
-            statusLabel.stringValue = "\(processCount) processes in \(groups.count) groups · Updates live"
-        }
-        rowsCard.isHidden = orderedNames.isEmpty
-        emptyLabel.isHidden = !orderedNames.isEmpty
-    }
-}
-
-final class ProcessGroupPageView: ProcessPageView, ProcessPageUpdating {
-    private let groupName: String
-    private let summaryValue = ProcessPageViewFactory.largeValueLabel()
-    private let summaryDetail = ProcessPageViewFactory.captionLabel()
-    private let memberHeading = ProcessPageViewFactory.sectionLabel("Processes")
-    private let emptyLabel = ProcessPageViewFactory.emptyLabel("No members in the current list")
-    private let rowsStack = ProcessPageViewFactory.verticalStack(spacing: 1)
-    private let scroll = ProcessPageScrollView()
-    private var rowsCard: NSView!
+    private var headerButtons: [ProcessSortMetric: NSButton] = [:]
+    private var rowsByID: [ProcessEntryID: ProcessTableRowControl] = [:]
     private var orderedIDs: [ProcessEntryID] = []
-    private var rowsByID: [ProcessEntryID: ProcessEntryRowControl] = [:]
+    private var currentEntries: [ProcessMonitor.Entry] = []
+    private var sortMetric: ProcessSortMetric = .cpu
+    private var ascending = false
 
-    var onSelectEntry: ((ProcessMonitor.Entry, NSView) -> Void)?
+    var onSelectEntry: ((ProcessMonitor.Entry, ProcessSortMetric, NSView) -> Void)?
 
-    init(resource: ProcessMonitor.Resource,
-         groupName: String,
-         groups: [ProcessMonitor.Group]) {
-        self.groupName = groupName
-        super.init(title: groupName, resource: resource)
+    init(entries: [ProcessMonitor.Entry]) {
+        super.init(title: "Processes")
 
-        let icon = MacPulseVisualStyle.symbolBadge(
-            resource.symbolName,
-            color: resource.accentColor,
-            accessibilityDescription: resource.label,
-            size: 32
+        let headerRow = NSStackView()
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = ProcessTableColumn.spacing
+
+        for metric in ProcessSortMetric.allCases {
+            let button = NSButton(title: metric.label, target: self, action: #selector(changeSort(_:)))
+            button.tag = ProcessSortMetric.allCases.firstIndex(of: metric) ?? 0
+            button.isBordered = false
+            button.bezelStyle = .accessoryBarAction
+            button.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
+            button.contentTintColor = .secondaryLabelColor
+            button.alignment = metric == .name ? .left : .right
+            button.setAccessibilityHelp("Sort processes by \(metric.label)")
+            button.translatesAutoresizingMaskIntoConstraints = false
+            if let width = ProcessTableColumn.width(for: metric) {
+                button.widthAnchor.constraint(equalToConstant: width).isActive = true
+                button.setContentHuggingPriority(.required, for: .horizontal)
+            } else {
+                button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            }
+            headerButtons[metric] = button
+            headerRow.addArrangedSubview(button)
+        }
+        let chevronSpace = NSView()
+        chevronSpace.translatesAutoresizingMaskIntoConstraints = false
+        chevronSpace.widthAnchor.constraint(equalToConstant: ProcessTableColumn.chevronWidth).isActive = true
+        headerRow.addArrangedSubview(chevronSpace)
+        let headerCard = MacPulseVisualStyle.card(
+            around: headerRow,
+            insets: NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
         )
-        let labels = ProcessPageViewFactory.verticalStack(spacing: 2)
-        labels.addArrangedSubview(summaryValue)
-        labels.addArrangedSubview(summaryDetail)
-        let summaryRow = NSStackView(views: [icon, labels, NSView()])
-        summaryRow.orientation = .horizontal
-        summaryRow.alignment = .centerY
-        summaryRow.spacing = 10
-        let summaryCard = MacPulseVisualStyle.card(around: summaryRow)
 
         rowsCard = MacPulseVisualStyle.card(
             around: rowsStack,
-            insets: NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+            insets: NSEdgeInsets(top: 5, left: 5, bottom: 5, right: 5)
         )
-        scroll.addFullWidthView(summaryCard)
-        scroll.addFullWidthView(memberHeading)
+
+        let note = NSTextField(wrappingLabelWithString:
+            "Per-process GPU and network data isn’t available through public macOS APIs.")
+        note.font = NSFont.systemFont(ofSize: 9.5)
+        note.textColor = .tertiaryLabelColor
+        note.alignment = .center
+        note.maximumNumberOfLines = 2
+        note.setAccessibilityLabel(note.stringValue)
+
+        scroll.addFullWidthView(statusLabel)
+        scroll.addFullWidthView(headerCard)
         scroll.addFullWidthView(rowsCard)
         scroll.addFullWidthView(emptyLabel)
+        scroll.addFullWidthView(note)
         installContent(scroll)
-        update(groups: groups)
+        updateHeaderButtons()
+        update(entries: entries)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(groups: [ProcessMonitor.Group]) {
-        guard let group = groups.first(where: { $0.name == groupName }) else {
-            summaryValue.stringValue = "—"
-            summaryDetail.stringValue = "No longer in the current process list"
-            let protected = Set(orderedIDs.filter { rowsByID[$0]?.isInteractionActive == true })
-            for id in orderedIDs {
-                if protected.contains(id) {
-                    rowsByID[id]?.update(nil)
-                } else if let row = rowsByID.removeValue(forKey: id) {
-                    rowsStack.removeArrangedSubview(row)
-                    row.removeFromSuperview()
-                }
-            }
-            orderedIDs.removeAll { !protected.contains($0) }
-            rowsCard.isHidden = orderedIDs.isEmpty
-            emptyLabel.isHidden = !orderedIDs.isEmpty
-            return
-        }
+    func update(entries: [ProcessMonitor.Entry]) {
+        currentEntries = entries
+        statusLabel.stringValue = "\(entries.count) processes · Updates live · Click a column to sort"
 
-        summaryValue.stringValue = resource.formattedValue(for: group)
-        summaryDetail.stringValue = group.count == 1
-            ? "1 process · Updates live"
-            : "\(group.count) processes · Updates live"
-        memberHeading.stringValue = group.count == 1 ? "Process" : "Processes"
-
-        let currentByID = Dictionary(uniqueKeysWithValues: group.entries.map { (ProcessEntryID($0), $0) })
+        let currentByID = Dictionary(uniqueKeysWithValues: entries.map { (ProcessEntryID($0), $0) })
         let stale = orderedIDs.filter { currentByID[$0] == nil }
         let protectedStale = Set(stale.filter { rowsByID[$0]?.isInteractionActive == true })
         for id in stale {
             if protectedStale.contains(id) {
                 rowsByID[id]?.update(nil)
-                continue
-            }
-            if let row = rowsByID.removeValue(forKey: id) {
+            } else if let row = rowsByID.removeValue(forKey: id) {
                 rowsStack.removeArrangedSubview(row)
                 row.removeFromSuperview()
             }
         }
         orderedIDs.removeAll { currentByID[$0] == nil && !protectedStale.contains($0) }
 
-        for entry in group.entries {
+        for entry in entries {
             let id = ProcessEntryID(entry)
             guard rowsByID[id] == nil else { continue }
-            let row = ProcessEntryRowControl(resource: resource, entry: entry)
+            let row = ProcessTableRowControl(entry: entry)
             row.onClick = { [weak self] entry, anchor in
-                self?.onSelectEntry?(entry, anchor)
+                guard let self else { return }
+                self.onSelectEntry?(entry, self.sortMetric, anchor)
             }
+            rowsByID[id] = row
             rowsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
-            rowsByID[id] = row
             orderedIDs.append(id)
         }
 
-        let desiredIDs = group.entries.map(ProcessEntryID.init)
-        if desiredIDs != orderedIDs,
-           protectedStale.isEmpty,
-           !rowsByID.values.contains(where: { $0.isPointerInteractionActive }) {
-            for row in rowsStack.arrangedSubviews {
-                rowsStack.removeArrangedSubview(row)
-            }
-            for id in desiredIDs {
-                if let row = rowsByID[id] { rowsStack.addArrangedSubview(row) }
-            }
-            orderedIDs = desiredIDs
+        for (id, row) in rowsByID {
+            row.update(currentByID[id])
         }
-
-        for id in orderedIDs {
-            rowsByID[id]?.update(currentByID[id])
-        }
+        reorderRowsIfPossible(protectedStale: protectedStale)
         rowsCard.isHidden = orderedIDs.isEmpty
         emptyLabel.isHidden = !orderedIDs.isEmpty
+    }
+
+    @objc private func changeSort(_ sender: NSButton) {
+        guard ProcessSortMetric.allCases.indices.contains(sender.tag) else { return }
+        let selected = ProcessSortMetric.allCases[sender.tag]
+        if selected == sortMetric {
+            ascending.toggle()
+        } else {
+            sortMetric = selected
+            ascending = selected == .name
+        }
+        updateHeaderButtons()
+        reorderRowsIfPossible(protectedStale: [])
+    }
+
+    private func updateHeaderButtons() {
+        for (metric, button) in headerButtons {
+            let active = metric == sortMetric
+            button.title = active ? "\(metric.label) \(ascending ? "↑" : "↓")" : metric.label
+            button.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
+            button.setAccessibilityValue(active ? (ascending ? "Ascending" : "Descending") : "Not sorted")
+        }
+    }
+
+    private func reorderRowsIfPossible(protectedStale: Set<ProcessEntryID>) {
+        guard protectedStale.isEmpty,
+              !rowsByID.values.contains(where: { $0.isPointerInteractionActive }) else { return }
+        let desiredIDs = sortMetric.sorted(currentEntries, ascending: ascending).map(ProcessEntryID.init)
+        guard desiredIDs != orderedIDs else { return }
+        for row in rowsStack.arrangedSubviews { rowsStack.removeArrangedSubview(row) }
+        for id in desiredIDs {
+            if let row = rowsByID[id] { rowsStack.addArrangedSubview(row) }
+        }
+        orderedIDs = desiredIDs
     }
 }
 
 final class ProcessEntryPageView: ProcessPageView, ProcessPageUpdating {
-    private let groupName: String
+    private let metric: ProcessSortMetric
     private let entryID: ProcessEntryID
     private let fallbackEntry: ProcessMonitor.Entry
     private let statusLabel = ProcessPageViewFactory.captionLabel()
@@ -391,6 +319,7 @@ final class ProcessEntryPageView: ProcessPageView, ProcessPageUpdating {
     private let selectedCaption = ProcessPageViewFactory.captionLabel()
     private let cpuValue = ProcessPageViewFactory.detailValueLabel()
     private let memoryValue = ProcessPageViewFactory.detailValueLabel()
+    private let diskValue = ProcessPageViewFactory.detailValueLabel()
     private let commandLabel = NSTextField(wrappingLabelWithString: "")
     private let copyPIDButton = NSButton(title: "Copy PID", target: nil, action: nil)
     private let quitButton = NSButton(title: "Quit", target: nil, action: nil)
@@ -400,17 +329,15 @@ final class ProcessEntryPageView: ProcessPageView, ProcessPageUpdating {
     var onCopyPID: ((Int32) -> Void)?
     var onAction: ((ProcessMonitor.Entry, StatsPopoverController.ProcessAction) -> Void)?
 
-    init(resource: ProcessMonitor.Resource,
-         groupName: String,
+    init(metric: ProcessSortMetric,
          entry: ProcessMonitor.Entry,
-         groups: [ProcessMonitor.Group]) {
-        self.groupName = groupName
+         entries: [ProcessMonitor.Entry]) {
+        self.metric = metric
         entryID = ProcessEntryID(entry)
         fallbackEntry = entry
-        super.init(title: entry.name, resource: resource)
+        super.init(title: entry.name)
 
         let scroll = ProcessPageScrollView()
-
         statusDot.translatesAutoresizingMaskIntoConstraints = false
         statusDot.widthAnchor.constraint(equalToConstant: 7).isActive = true
         statusDot.heightAnchor.constraint(equalToConstant: 7).isActive = true
@@ -420,9 +347,9 @@ final class ProcessEntryPageView: ProcessPageView, ProcessPageUpdating {
         statusRow.spacing = 5
 
         let icon = MacPulseVisualStyle.symbolBadge(
-            resource.symbolName,
-            color: resource.accentColor,
-            accessibilityDescription: resource.label,
+            metric.symbolName,
+            color: metric.accentColor,
+            accessibilityDescription: metric.label,
             size: 34
         )
         let selectedLabels = ProcessPageViewFactory.verticalStack(spacing: 2)
@@ -437,10 +364,10 @@ final class ProcessEntryPageView: ProcessPageView, ProcessPageUpdating {
         let facts = ProcessPageViewFactory.verticalStack(spacing: 8)
         facts.addArrangedSubview(ProcessPageViewFactory.detailRow(title: "CPU", value: cpuValue))
         facts.addArrangedSubview(ProcessPageViewFactory.detailRow(title: "Resident Memory", value: memoryValue))
+        facts.addArrangedSubview(ProcessPageViewFactory.detailRow(title: "Disk I/O", value: diskValue))
         let pidValue = ProcessPageViewFactory.detailValueLabel()
         pidValue.stringValue = String(entry.pid)
-        let pidRow = ProcessPageViewFactory.detailRow(title: "PID", value: pidValue)
-        facts.addArrangedSubview(pidRow)
+        facts.addArrangedSubview(ProcessPageViewFactory.detailRow(title: "PID", value: pidValue))
         let factsCard = MacPulseVisualStyle.card(around: facts)
 
         commandLabel.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
@@ -487,37 +414,37 @@ final class ProcessEntryPageView: ProcessPageView, ProcessPageUpdating {
         let actionCard = MacPulseVisualStyle.card(around: actions)
 
         scroll.addFullWidthView(statusRow)
-        for card in [usageCard, factsCard, commandCard, actionCard] {
-            scroll.addFullWidthView(card)
-        }
+        for card in [usageCard, factsCard, commandCard, actionCard] { scroll.addFullWidthView(card) }
         installContent(scroll)
-        update(groups: groups)
+        update(entries: entries)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(groups: [ProcessMonitor.Group]) {
-        let entry = entryID.resolve(in: groups, groupName: groupName)
+    func update(entries: [ProcessMonitor.Entry]) {
+        let entry = entryID.resolve(in: entries)
         currentEntry = entry
 
         if let entry {
             statusDot.color = .systemGreen
             statusLabel.stringValue = "Live · Updates automatically"
-            selectedValue.stringValue = resource.formattedValue(for: entry)
-            selectedCaption.stringValue = resource == .cpu ? "CPU usage" : "Resident memory"
+            selectedValue.stringValue = metric.formattedValue(for: entry)
+            selectedCaption.stringValue = metric.detailLabel
             cpuValue.stringValue = String(format: "%.1f%%", entry.cpuPercent)
             memoryValue.stringValue = ByteFormatter.size(entry.memoryBytes)
+            diskValue.stringValue = ByteFormatter.rate(entry.diskBytesPerSecond)
             commandLabel.stringValue = entry.command
             commandLabel.toolTip = entry.command
             quitButton.isEnabled = true
             forceKillButton.isEnabled = true
         } else {
             statusDot.color = .systemOrange
-            statusLabel.stringValue = "No longer in the current process list"
+            statusLabel.stringValue = "Process is no longer running"
             selectedValue.stringValue = "—"
-            selectedCaption.stringValue = resource == .cpu ? "CPU usage unavailable" : "Memory usage unavailable"
+            selectedCaption.stringValue = "Usage unavailable"
             cpuValue.stringValue = "—"
             memoryValue.stringValue = "—"
+            diskValue.stringValue = "—"
             commandLabel.stringValue = fallbackEntry.command
             commandLabel.toolTip = fallbackEntry.command
             quitButton.isEnabled = false
@@ -545,23 +472,38 @@ final class ProcessEntryPageView: ProcessPageView, ProcessPageUpdating {
     }
 }
 
-final class ProcessEntryRowControl: NSButton {
+private enum ProcessTableColumn {
+    static let spacing: CGFloat = 5
+    static let chevronWidth: CGFloat = 8
+
+    static func width(for metric: ProcessSortMetric) -> CGFloat? {
+        switch metric {
+        case .name: return nil
+        case .cpu: return 42
+        case .memory: return 58
+        case .disk: return 62
+        }
+    }
+}
+
+final class ProcessTableRowControl: NSButton {
+    private let nameLabel = NSTextField(labelWithString: "")
     private let pidLabel = NSTextField(labelWithString: "")
-    private let valueLabel = NSTextField(labelWithString: "")
+    private let cpuLabel = ProcessPageViewFactory.tableValueLabel()
+    private let memoryLabel = ProcessPageViewFactory.tableValueLabel()
+    private let diskLabel = ProcessPageViewFactory.tableValueLabel()
     private let chevron = NSImageView()
     private var trackingArea: NSTrackingArea?
     private var isPointerInside = false
     private var entry: ProcessMonitor.Entry?
-    private let resource: ProcessMonitor.Resource
-    private let fallbackPID: Int32
+    private let fallbackEntry: ProcessMonitor.Entry
 
     var onClick: ((ProcessMonitor.Entry, NSView) -> Void)?
     var isInteractionActive: Bool { isPointerInside || window?.firstResponder === self }
     var isPointerInteractionActive: Bool { isPointerInside }
 
-    init(resource: ProcessMonitor.Resource, entry: ProcessMonitor.Entry) {
-        self.resource = resource
-        fallbackPID = entry.pid
+    init(entry: ProcessMonitor.Entry) {
+        fallbackEntry = entry
         self.entry = entry
         super.init(frame: .zero)
         title = ""
@@ -576,34 +518,42 @@ final class ProcessEntryRowControl: NSButton {
         setAccessibilityRole(.button)
         setAccessibilityHelp("Show process details")
 
-        pidLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
-        pidLabel.textColor = .labelColor
-
-        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        valueLabel.textColor = .secondaryLabelColor
-        valueLabel.alignment = .right
-        valueLabel.setContentHuggingPriority(.required, for: .horizontal)
+        nameLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        nameLabel.textColor = .labelColor
+        nameLabel.lineBreakMode = .byTruncatingMiddle
+        nameLabel.cell?.usesSingleLineMode = true
+        pidLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .regular)
+        pidLabel.textColor = .tertiaryLabelColor
+        let nameStack = ProcessPageViewFactory.verticalStack(spacing: 0)
+        nameStack.addArrangedSubview(nameLabel)
+        nameStack.addArrangedSubview(pidLabel)
+        nameStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        nameStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
-            chevron.image = image.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+            chevron.image = image.withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
         }
         chevron.contentTintColor = .tertiaryLabelColor
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        chevron.widthAnchor.constraint(equalToConstant: ProcessTableColumn.chevronWidth).isActive = true
 
-        for view in [pidLabel, valueLabel, chevron] { view.translatesAutoresizingMaskIntoConstraints = false }
-        addSubview(pidLabel)
-        addSubview(valueLabel)
-        addSubview(chevron)
+        let row = NSStackView(views: [nameStack, cpuLabel, memoryLabel, diskLabel, chevron])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = ProcessTableColumn.spacing
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
 
+        for pair in [(cpuLabel, ProcessSortMetric.cpu),
+                     (memoryLabel, ProcessSortMetric.memory),
+                     (diskLabel, ProcessSortMetric.disk)] {
+            pair.0.widthAnchor.constraint(equalToConstant: ProcessTableColumn.width(for: pair.1) ?? 0).isActive = true
+        }
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 30),
-            pidLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            pidLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            valueLabel.leadingAnchor.constraint(greaterThanOrEqualTo: pidLabel.trailingAnchor, constant: 8),
-            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            chevron.leadingAnchor.constraint(equalTo: valueLabel.trailingAnchor, constant: 5),
-            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
-            chevron.widthAnchor.constraint(equalToConstant: 10)
+            heightAnchor.constraint(equalToConstant: 36),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         update(entry)
     }
@@ -612,7 +562,6 @@ final class ProcessEntryRowControl: NSButton {
 
     override var acceptsFirstResponder: Bool { true }
     override var focusRingMaskBounds: NSRect { bounds.insetBy(dx: 2, dy: 2) }
-
     override func drawFocusRingMask() {
         NSBezierPath(roundedRect: focusRingMaskBounds, xRadius: 7, yRadius: 7).fill()
     }
@@ -645,20 +594,25 @@ final class ProcessEntryRowControl: NSButton {
 
     func update(_ entry: ProcessMonitor.Entry?) {
         self.entry = entry
-        pidLabel.stringValue = "PID \(fallbackPID)"
+        nameLabel.stringValue = entry?.name ?? fallbackEntry.name
+        pidLabel.stringValue = "PID \(fallbackEntry.pid)"
         if let entry {
             isEnabled = true
-            valueLabel.stringValue = resource.formattedValue(for: entry)
+            cpuLabel.stringValue = String(format: "%.1f%%", entry.cpuPercent)
+            memoryLabel.stringValue = ByteFormatter.size(entry.memoryBytes)
+            diskLabel.stringValue = ByteFormatter.rate(entry.diskBytesPerSecond)
             chevron.isHidden = false
             toolTip = entry.command
-            setAccessibilityLabel("PID \(entry.pid)")
-            setAccessibilityValue(resource.accessibilityValue(for: entry))
+            setAccessibilityLabel("\(entry.name), PID \(entry.pid)")
+            setAccessibilityValue("\(cpuLabel.stringValue) CPU, \(memoryLabel.stringValue) RAM, \(diskLabel.stringValue) disk I/O")
         } else {
             isEnabled = false
-            valueLabel.stringValue = "Unavailable"
+            cpuLabel.stringValue = "—"
+            memoryLabel.stringValue = "—"
+            diskLabel.stringValue = "—"
             chevron.isHidden = true
-            toolTip = "No longer in the current process list"
-            setAccessibilityLabel("PID \(fallbackPID), unavailable")
+            toolTip = "Process is no longer running"
+            setAccessibilityLabel("\(fallbackEntry.name), PID \(fallbackEntry.pid), unavailable")
             setAccessibilityValue(nil)
         }
     }
@@ -718,6 +672,16 @@ private enum ProcessPageViewFactory {
         return label
     }
 
+    static func tableValueLabel() -> NSTextField {
+        let label = NSTextField(labelWithString: "—")
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .medium)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .right
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        return label
+    }
+
     static func detailRow(title: String, value: NSTextField) -> NSStackView {
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
@@ -734,25 +698,40 @@ private final class ProcessPageDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
-extension ProcessMonitor.Resource {
+private extension ProcessSortMetric {
     var symbolName: String {
         switch self {
+        case .name: return "list.bullet"
         case .cpu: return "cpu"
         case .memory: return "memorychip"
+        case .disk: return "internaldrive"
         }
     }
 
     var accentColor: NSColor {
         switch self {
+        case .name: return .controlAccentColor
         case .cpu: return .systemBlue
         case .memory: return .systemPurple
+        case .disk: return .systemOrange
         }
     }
 
-    func accessibilityValue(for entry: ProcessMonitor.Entry) -> String {
+    var detailLabel: String {
         switch self {
-        case .cpu: return String(format: "%.1f percent CPU", entry.cpuPercent)
-        case .memory: return "\(ByteFormatter.size(entry.memoryBytes)) resident memory"
+        case .name: return "Process"
+        case .cpu: return "CPU usage"
+        case .memory: return "Resident memory"
+        case .disk: return "Disk I/O"
+        }
+    }
+
+    func formattedValue(for entry: ProcessMonitor.Entry) -> String {
+        switch self {
+        case .name: return entry.name
+        case .cpu: return String(format: "%.1f%%", entry.cpuPercent)
+        case .memory: return ByteFormatter.size(entry.memoryBytes)
+        case .disk: return ByteFormatter.rate(entry.diskBytesPerSecond)
         }
     }
 }

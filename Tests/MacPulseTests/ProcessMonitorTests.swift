@@ -15,6 +15,7 @@ enum ProcessMonitorTests {
         MacPulseTestCase("ProcessMonitor computeEntries normalizes CPU and sorts", testComputeEntriesNormalizesAndSorts),
         MacPulseTestCase("ProcessMonitor computeEntries clamps cpu at 100", testComputeEntriesClampsCPUAtOneHundred),
         MacPulseTestCase("ProcessMonitor computeEntries zero on first tick", testComputeEntriesZeroOnFirstTick),
+        MacPulseTestCase("ProcessMonitor computeEntries calculates disk IO rate", testComputeEntriesCalculatesDiskRate),
         MacPulseTestCase("ProcessMonitor computeEntries treats PID reuse as new process", testComputeEntriesPIDReuseGivesZero),
         MacPulseTestCase("ProcessMonitor computeEntries applies limit", testComputeEntriesAppliesLimit),
         MacPulseTestCase("ProcessMonitor groupEntries aggregates same-name processes", testGroupEntriesAggregatesSameName),
@@ -41,7 +42,7 @@ enum ProcessMonitorTests {
         let monitor = ProcessMonitor()
 
         let firstSnapshot = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit)
-        let first = firstSnapshot.cpuGroups.flatMap(\.entries)
+        let first = firstSnapshot.entries
         try expect(!first.isEmpty, "live sample returned no processes")
         try expect(first.contains { !$0.command.isEmpty }, "no process had a readable command")
         try expect(first.contains { $0.memoryBytes > 0 }, "no process had resident memory")
@@ -51,8 +52,7 @@ enum ProcessMonitorTests {
                        "memory groups were not sorted descending")
         }
 
-        let second = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit)
-            .cpuGroups.flatMap(\.entries)
+        let second = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit).entries
         try expect(!second.isEmpty, "second live sample returned no processes")
 
         var firstByPid: [Int32: ProcessMonitor.Entry] = [:]
@@ -304,6 +304,28 @@ enum ProcessMonitorTests {
 
         try expectEqual(entries.count, 1)
         try expectClose(entries[0].cpuPercent, 0.0)
+    }
+
+    static func testComputeEntriesCalculatesDiskRate() throws {
+        let id = ProcessMonitor.ProcessIdentity(startTimeSeconds: 1, startTimeMicroseconds: 0, uid: 501)
+        let prev: [Int32: ProcessMonitor.PreviousSnapshot] = [
+            7: .init(cumulativeCpuNs: 0, cumulativeDiskBytes: 1_000, identity: id)
+        ]
+        let now: [ProcessMonitor.RawSample] = [
+            .init(pid: 7,
+                  cumulativeCpuNs: 0,
+                  cumulativeDiskBytes: 6_000,
+                  identity: id,
+                  command: "/usr/bin/writer",
+                  name: "writer")
+        ]
+
+        let entries = ProcessMonitor.computeEntries(currentSamples: now,
+                                                     previousSnapshots: prev,
+                                                     elapsedNs: 2_000_000_000,
+                                                     activeProcessorCount: 4,
+                                                     limit: 5)
+        try expectClose(entries[0].diskBytesPerSecond, 2_500)
     }
 
     static func testGroupEntriesAggregatesSameName() throws {

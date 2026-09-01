@@ -133,7 +133,6 @@ final class StatusBarController: NSObject {
         startTimer()           // interval 可能變了
         popoverController.applyVisibility()
         popoverController.applySparklineCapacity()
-        popoverController.applyProcessSettings()
         renderMenuBar()        // 用最後一次樣本重繪
         tick()
     }
@@ -235,18 +234,14 @@ final class StatusBarController: NSObject {
                                      disk: lastDisk,
                                      temperature: lastTemperature,
                                      power: lastPower)
-            if !Settings.shared.popoverMetrics.isDisjoint(with: [.cpu, .memory]) {
-                refreshProcessList()
-            }
+            refreshProcessList()
         }
     }
 
     private func refreshProcessList() {
-        // The overview still shows the configured Top N, while the pushed
-        // process browser can use the complete bounded snapshot.
+        // The process page owns its sorting and displays every sampled process.
         processes.sample(limit: ProcessMonitor.hardLimit) { [weak self] snapshot in
-            self?.popoverController.updateProcesses(snapshot.cpuGroups)
-            self?.popoverController.updateMemoryProcesses(snapshot.memoryGroups)
+            self?.popoverController.updateProcesses(snapshot.entries)
         }
     }
 

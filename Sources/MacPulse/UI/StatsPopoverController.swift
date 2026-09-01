@@ -57,47 +57,19 @@ final class StatsPopoverController: NSViewController {
     private let gpuBreakdown = StatsPopoverController.makeSecondaryLabel()
     private let gpuSparkline = SparklineView(capacity: 60)
 
-    // Top processes (within the CPU section)
-    private let processesHeaderButton: NSButton = {
-        let button = NSButton(title: "Top Processes", target: nil, action: nil)
-        button.bezelStyle = .accessoryBarAction
+    // Full-page process browser
+    private let processesButton: NSButton = {
+        let button = NSButton(title: "", target: nil, action: nil)
         button.isBordered = false
-        button.alignment = .left
-        button.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        button.contentTintColor = .secondaryLabelColor
-        button.imagePosition = .imageLeading
-        button.imageHugsTitle = true
-        button.toolTip = "Click to collapse / expand"
-        button.setAccessibilityLabel("Top processes")
-        button.setAccessibilityHelp("Collapse or expand the top processes list.")
+        button.focusRingType = .exterior
+        button.toolTip = "View all processes"
+        button.setAccessibilityLabel("Processes")
+        button.setAccessibilityHelp("Open the process table with sortable CPU, RAM, and disk I/O columns.")
         return button
     }()
-    private let processListStack: NSStackView = {
-        let s = NSStackView()
-        s.orientation = .vertical
-        s.alignment = .leading
-        s.spacing = 1
-        return s
-    }()
-    private let moreProcessesButton: NSButton = {
-        let button = NSButton(title: "View Processes", target: nil, action: nil)
-        button.bezelStyle = .accessoryBarAction
-        button.isBordered = false
-        button.contentTintColor = .controlAccentColor
-        button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
-            button.image = image.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
-        }
-        button.imagePosition = .imageTrailing
-        button.imageHugsTitle = true
-        button.toolTip = "Browse CPU processes"
-        button.setAccessibilityLabel("Browse CPU processes")
-        return button
-    }()
-    private var processRows: [ProcessRowControl] = []
-    private var allGroups: [ProcessMonitor.Group] = []
+    private var allProcesses: [ProcessMonitor.Entry] = []
     /// 由外部（StatusBarController）注入：執行 Quit / Force Kill 並回報結果。
-    /// 群組只是顯示層的彙總 — 操作永遠針對個別 Entry。
+    /// 操作永遠針對取樣時以 identity 驗證過的個別 Entry。
     var processActionHandler: ((ProcessMonitor.Entry, ProcessAction) -> Void)?
 
     enum ProcessAction {
@@ -110,46 +82,6 @@ final class StatsPopoverController: NSViewController {
     private let memBreakdown = StatsPopoverController.makeSecondaryLabel()
     private let swapUsedLabel = StatsPopoverController.makeSecondaryLabel()
     private let memSparkline = SparklineView(capacity: 60)
-
-    // Top memory processes (within the Memory section)
-    private let memoryProcessesHeaderButton: NSButton = {
-        let button = NSButton(title: "Top Memory Processes", target: nil, action: nil)
-        button.bezelStyle = .accessoryBarAction
-        button.isBordered = false
-        button.alignment = .left
-        button.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        button.contentTintColor = .secondaryLabelColor
-        button.imagePosition = .imageLeading
-        button.imageHugsTitle = true
-        button.toolTip = "Click to collapse / expand"
-        button.setAccessibilityLabel("Top memory processes")
-        button.setAccessibilityHelp("Collapse or expand the top memory processes list.")
-        return button
-    }()
-    private let memoryProcessListStack: NSStackView = {
-        let s = NSStackView()
-        s.orientation = .vertical
-        s.alignment = .leading
-        s.spacing = 1
-        return s
-    }()
-    private let moreMemoryProcessesButton: NSButton = {
-        let button = NSButton(title: "View Processes", target: nil, action: nil)
-        button.bezelStyle = .accessoryBarAction
-        button.isBordered = false
-        button.contentTintColor = .controlAccentColor
-        button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
-            button.image = image.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
-        }
-        button.imagePosition = .imageTrailing
-        button.imageHugsTitle = true
-        button.toolTip = "Browse memory processes"
-        button.setAccessibilityLabel("Browse memory processes")
-        return button
-    }()
-    private var memoryProcessRows: [ProcessRowControl] = []
-    private var allMemoryGroups: [ProcessMonitor.Group] = []
 
     // Network
     private let downLabel = StatsPopoverController.makeRateLabel()
@@ -224,6 +156,40 @@ final class StatsPopoverController: NSViewController {
         header.alignment = .centerY
         header.spacing = 9
 
+        let processIcon = MacPulseVisualStyle.symbolBadge(
+            "list.bullet.rectangle",
+            color: .systemIndigo,
+            accessibilityDescription: "Processes",
+            size: 30
+        )
+        let processTitle = NSTextField(labelWithString: "Processes")
+        processTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        processTitle.textColor = .labelColor
+        let processDetail = NSTextField(labelWithString: "CPU · RAM · Disk I/O")
+        processDetail.font = NSFont.systemFont(ofSize: 10.5, weight: .medium)
+        processDetail.textColor = .secondaryLabelColor
+        let processLabels = stack([processTitle, processDetail], spacing: 1)
+        let processChevron = NSImageView()
+        if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
+            processChevron.image = image.withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+        }
+        processChevron.contentTintColor = .tertiaryLabelColor
+        let processRow = NSStackView(views: [processIcon, processLabels, NSView(), processChevron])
+        processRow.orientation = .horizontal
+        processRow.alignment = .centerY
+        processRow.spacing = 9
+        let processesCard = popoverCard(around: processRow)
+        processesButton.target = self
+        processesButton.action = #selector(showProcessesPage(_:))
+        processesButton.translatesAutoresizingMaskIntoConstraints = false
+        processesCard.addSubview(processesButton)
+        NSLayoutConstraint.activate([
+            processesButton.leadingAnchor.constraint(equalTo: processesCard.leadingAnchor),
+            processesButton.trailingAnchor.constraint(equalTo: processesCard.trailingAnchor),
+            processesButton.topAnchor.constraint(equalTo: processesCard.topAnchor),
+            processesButton.bottomAnchor.constraint(equalTo: processesCard.bottomAnchor)
+        ])
+
         // CPU section
         cpuSparkline.fixedMaxValue = 100
         cpuSparkline.lineColor = .systemBlue
@@ -232,30 +198,13 @@ final class StatsPopoverController: NSViewController {
 
         let cpuRow = headerRow(metric: .cpu, valueView: cpuValueLabel)
 
-        moreProcessesButton.target = self
-        moreProcessesButton.action = #selector(showCPUProcessesPage(_:))
-        processesHeaderButton.target = self
-        processesHeaderButton.action = #selector(toggleProcessesCollapsed)
-
-        let processesSection = stack([processesHeaderButton, processListStack, moreProcessesButton], spacing: 4)
-
-        let cpuSection = stack([cpuRow, cpuBreakdown, cpuSparkline, processesSection], spacing: 7)
+        let cpuSection = stack([cpuRow, cpuBreakdown, cpuSparkline], spacing: 7)
         sections[.cpu] = popoverCard(around: cpuSection)
 
-        // Process list 寬度跟著 CPU section 撐滿
-        processListStack.translatesAutoresizingMaskIntoConstraints = false
-        processListStack.widthAnchor.constraint(equalTo: processesSection.widthAnchor).isActive = true
-        processesSection.translatesAutoresizingMaskIntoConstraints = false
-        processesSection.widthAnchor.constraint(equalTo: cpuSection.widthAnchor).isActive = true
-        processesHeaderButton.translatesAutoresizingMaskIntoConstraints = false
-        processesHeaderButton.widthAnchor.constraint(equalTo: processesSection.widthAnchor).isActive = true
         cpuRow.translatesAutoresizingMaskIntoConstraints = false
         cpuRow.widthAnchor.constraint(equalTo: cpuSection.widthAnchor).isActive = true
         cpuSparkline.translatesAutoresizingMaskIntoConstraints = false
         cpuSparkline.widthAnchor.constraint(equalTo: cpuSection.widthAnchor).isActive = true
-
-        rebuildProcessRows()
-        applyProcessesCollapsedState()
 
         // GPU
         gpuSparkline.fixedMaxValue = 100
@@ -281,31 +230,12 @@ final class StatsPopoverController: NSViewController {
         memDetails.alignment = .firstBaseline
         memDetails.spacing = 8
 
-        moreMemoryProcessesButton.target = self
-        moreMemoryProcessesButton.action = #selector(showMemoryProcessesPage(_:))
-        memoryProcessesHeaderButton.target = self
-        memoryProcessesHeaderButton.action = #selector(toggleMemoryProcessesCollapsed)
-
-        let memoryProcessesSection = stack(
-            [memoryProcessesHeaderButton, memoryProcessListStack, moreMemoryProcessesButton],
-            spacing: 4
-        )
-        let memSection = stack([memRow, memDetails, memSparkline, memoryProcessesSection], spacing: 7)
+        let memSection = stack([memRow, memDetails, memSparkline], spacing: 7)
         memDetails.translatesAutoresizingMaskIntoConstraints = false
         memDetails.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
         memRow.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
         memSparkline.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
         sections[.memory] = popoverCard(around: memSection)
-
-        memoryProcessListStack.translatesAutoresizingMaskIntoConstraints = false
-        memoryProcessListStack.widthAnchor.constraint(equalTo: memoryProcessesSection.widthAnchor).isActive = true
-        memoryProcessesSection.translatesAutoresizingMaskIntoConstraints = false
-        memoryProcessesSection.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
-        memoryProcessesHeaderButton.translatesAutoresizingMaskIntoConstraints = false
-        memoryProcessesHeaderButton.widthAnchor.constraint(equalTo: memoryProcessesSection.widthAnchor).isActive = true
-
-        rebuildMemoryProcessRows()
-        applyMemoryProcessesCollapsedState()
 
         // Network
         netSparkline.lineColor = .systemGreen
@@ -370,7 +300,7 @@ final class StatsPopoverController: NSViewController {
 
         // Compose the content layer as semantic material cards. Glass remains
         // reserved for the popover surface and top-level action buttons.
-        var rootSubviews: [NSView] = [header]
+        var rootSubviews: [NSView] = [header, processesCard]
         for metric in Metric.allCases where metric != .temperature && metric != .power {
             if let section = sections[metric] {
                 rootSubviews.append(section)
@@ -448,168 +378,22 @@ final class StatsPopoverController: NSViewController {
         netSparkline.setCapacity(cap)
     }
 
-    /// 設定的 topProcessCount 改變時呼叫，調整 inline row 數量。
-    func applyProcessSettings() {
-        rebuildProcessRows()
-        rebuildMemoryProcessRows()
-        applyProcessesCollapsedState()
-        applyMemoryProcessesCollapsedState()
-        adjustPreferredSize()
+    // MARK: - Process browser
+
+    func updateProcesses(_ entries: [ProcessMonitor.Entry]) {
+        allProcesses = entries
+        updateVisibleProcessPage()
     }
 
-    private func applyProcessesCollapsedState() {
-        let collapsed = Settings.shared.processesCollapsed
-        processListStack.isHidden = collapsed
-        // moreButton 的可見度同時受 collapsed 跟「是否有 extra」影響
-        let hasExtras = allGroups.count > Settings.shared.topProcessCount
-        moreProcessesButton.isHidden = collapsed || !hasExtras
-        processesHeaderButton.image = NSImage(
-            systemSymbolName: collapsed ? "chevron.right" : "chevron.down",
-            accessibilityDescription: nil
-        )?.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
-        processesHeaderButton.setAccessibilityValue(collapsed ? "Collapsed" : "Expanded")
-    }
-
-    @objc private func toggleProcessesCollapsed() {
-        Settings.shared.processesCollapsed.toggle()
-        applyProcessesCollapsedState()
-        adjustPreferredSize()
-    }
-
-    private func applyMemoryProcessesCollapsedState() {
-        let collapsed = Settings.shared.memoryProcessesCollapsed
-        memoryProcessListStack.isHidden = collapsed
-        let hasExtras = allMemoryGroups.count > Settings.shared.topProcessCount
-        moreMemoryProcessesButton.isHidden = collapsed || !hasExtras
-        memoryProcessesHeaderButton.image = NSImage(
-            systemSymbolName: collapsed ? "chevron.right" : "chevron.down",
-            accessibilityDescription: nil
-        )?.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
-        memoryProcessesHeaderButton.setAccessibilityValue(collapsed ? "Collapsed" : "Expanded")
-    }
-
-    @objc private func toggleMemoryProcessesCollapsed() {
-        Settings.shared.memoryProcessesCollapsed.toggle()
-        applyMemoryProcessesCollapsedState()
-        adjustPreferredSize()
-    }
-
-    // MARK: - Process list
-
-    private func rebuildProcessRows() {
-        let target = Settings.shared.topProcessCount
-        while processRows.count > target {
-            let removed = processRows.removeLast()
-            processListStack.removeArrangedSubview(removed)
-            removed.removeFromSuperview()
-        }
-        while processRows.count < target {
-            let row = ProcessRowControl()
-            row.translatesAutoresizingMaskIntoConstraints = false
-            row.onClick = { [weak self] group, anchor in
-                self?.showProcessGroupOrEntry(group, resource: .cpu, returnFocusTo: anchor)
-            }
-            processListStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: processListStack.widthAnchor).isActive = true
-            processRows.append(row)
-        }
-        updateProcessRowContents()
-    }
-
-    private func rebuildMemoryProcessRows() {
-        let target = Settings.shared.topProcessCount
-        while memoryProcessRows.count > target {
-            let removed = memoryProcessRows.removeLast()
-            memoryProcessListStack.removeArrangedSubview(removed)
-            removed.removeFromSuperview()
-        }
-        while memoryProcessRows.count < target {
-            let row = ProcessRowControl(resource: .memory)
-            row.translatesAutoresizingMaskIntoConstraints = false
-            row.onClick = { [weak self] group, anchor in
-                self?.showProcessGroupOrEntry(group, resource: .memory, returnFocusTo: anchor)
-            }
-            memoryProcessListStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: memoryProcessListStack.widthAnchor).isActive = true
-            memoryProcessRows.append(row)
-        }
-        updateMemoryProcessRowContents()
-    }
-
-    func updateProcesses(_ groups: [ProcessMonitor.Group]) {
-        let topCount = Settings.shared.topProcessCount
-        let rowsBefore = min(allGroups.count, processRows.count)
-        let extrasBefore = allGroups.count > topCount
-        allGroups = groups
-        updateProcessRowContents()
-        updateVisibleProcessPage(for: .cpu)
-        // 列高固定 — 只有可見列數或 More 按鈕的顯示狀態改變時才需要
-        // 重新 layout；每秒對整棵 view tree 跑 layoutSubtreeIfNeeded 太浪費。
-        let rowsAfter = min(allGroups.count, processRows.count)
-        let extrasAfter = allGroups.count > topCount
-        if rowsBefore != rowsAfter || extrasBefore != extrasAfter {
-            adjustPreferredSize(preservingVisibleSize: true)
-        }
-    }
-
-    func updateMemoryProcesses(_ groups: [ProcessMonitor.Group]) {
-        let topCount = Settings.shared.topProcessCount
-        let rowsBefore = min(allMemoryGroups.count, memoryProcessRows.count)
-        let extrasBefore = allMemoryGroups.count > topCount
-        allMemoryGroups = groups
-        updateMemoryProcessRowContents()
-        updateVisibleProcessPage(for: .memory)
-        let rowsAfter = min(allMemoryGroups.count, memoryProcessRows.count)
-        let extrasAfter = allMemoryGroups.count > topCount
-        if rowsBefore != rowsAfter || extrasBefore != extrasAfter {
-            adjustPreferredSize(preservingVisibleSize: true)
-        }
-    }
-
-    private func updateProcessRowContents() {
-        for (idx, row) in processRows.enumerated() {
-            row.update(idx < allGroups.count ? allGroups[idx] : nil)
-        }
-        // moreButton 的最終可見度由 applyProcessesCollapsedState 統一處理，
-        // 避免 collapsed 狀態被資料更新覆蓋掉。
-        applyProcessesCollapsedState()
-    }
-
-    private func updateMemoryProcessRowContents() {
-        for (idx, row) in memoryProcessRows.enumerated() {
-            row.update(idx < allMemoryGroups.count ? allMemoryGroups[idx] : nil)
-        }
-        applyMemoryProcessesCollapsedState()
-    }
-
-    @objc private func showCPUProcessesPage(_ sender: NSButton) {
-        pushProcessPage(.list(.cpu), returnFocusTo: sender)
-    }
-
-    @objc private func showMemoryProcessesPage(_ sender: NSButton) {
-        pushProcessPage(.list(.memory), returnFocusTo: sender)
-    }
-
-    private func showProcessGroupOrEntry(_ group: ProcessMonitor.Group,
-                                         resource: ProcessMonitor.Resource,
-                                         returnFocusTo view: NSView) {
-        if group.entries.count == 1, let entry = group.entries.first {
-            showProcessEntry(entry,
-                             groupName: group.name,
-                             resource: resource,
-                             returnFocusTo: view)
-        } else {
-            pushProcessPage(.group(resource, name: group.name),
-                            returnFocusTo: view)
-        }
+    @objc private func showProcessesPage(_ sender: NSButton) {
+        pushProcessPage(.processes, returnFocusTo: sender)
     }
 
     private func showProcessEntry(_ entry: ProcessMonitor.Entry,
-                                  groupName: String,
-                                  resource: ProcessMonitor.Resource,
+                                  metric: ProcessSortMetric,
                                   returnFocusTo view: NSView) {
         pushProcessPage(
-            .entry(resource, groupName: groupName, id: ProcessEntryID(entry)),
+            .entry(id: ProcessEntryID(entry), metric: metric),
             fallbackEntry: entry,
             returnFocusTo: view
         )
@@ -658,38 +442,22 @@ final class StatsPopoverController: NSViewController {
 
     private func makeProcessPageController(route: ProcessNavigationState.Route,
                                            fallbackEntry: ProcessMonitor.Entry?) -> NSViewController? {
-        let groups = groups(for: route.resource)
         let page: ProcessPageView
 
         switch route {
-        case .list(let resource):
-            let list = ProcessListPageView(resource: resource, groups: groups)
-            list.onSelectGroup = { [weak self] group, anchor in
-                self?.showProcessGroupOrEntry(group,
-                                              resource: resource,
-                                              returnFocusTo: anchor)
+        case .processes:
+            let processes = ProcessTaskManagerPageView(entries: allProcesses)
+            processes.onSelectEntry = { [weak self] entry, metric, anchor in
+                self?.showProcessEntry(entry, metric: metric, returnFocusTo: anchor)
             }
-            page = list
+            page = processes
 
-        case .group(let resource, let name):
-            let group = ProcessGroupPageView(resource: resource,
-                                             groupName: name,
-                                             groups: groups)
-            group.onSelectEntry = { [weak self] entry, anchor in
-                self?.showProcessEntry(entry,
-                                       groupName: name,
-                                       resource: resource,
-                                       returnFocusTo: anchor)
-            }
-            page = group
-
-        case .entry(let resource, let groupName, let id):
-            let resolved = id.resolve(in: groups, groupName: groupName)
+        case .entry(let id, let metric):
+            let resolved = id.resolve(in: allProcesses)
             guard let entry = resolved ?? fallbackEntry else { return nil }
-            let detail = ProcessEntryPageView(resource: resource,
-                                              groupName: groupName,
+            let detail = ProcessEntryPageView(metric: metric,
                                               entry: entry,
-                                              groups: groups)
+                                              entries: allProcesses)
             detail.onCopyPID = { [weak self] pid in self?.copyPID(pid) }
             detail.onAction = { [weak self] entry, action in
                 self?.confirmAndPerform(entry: entry, action: action)
@@ -714,7 +482,7 @@ final class StatsPopoverController: NSViewController {
         destination.view.autoresizingMask = [.width, .height]
         if let page = destination.view as? ProcessPageView,
            let updating = page as? ProcessPageUpdating {
-            updating.update(groups: groups(for: page.resource))
+            updating.update(entries: allProcesses)
         }
         let options = processTransitionOptions(forward: false)
         let completion = { [weak self, weak source] in
@@ -770,17 +538,10 @@ final class StatsPopoverController: NSViewController {
         }
     }
 
-    private func updateVisibleProcessPage(for resource: ProcessMonitor.Resource) {
-        guard processNavigation.current?.resource == resource,
+    private func updateVisibleProcessPage() {
+        guard processNavigation.current != nil,
               let page = processPageControllers.last?.view as? ProcessPageUpdating else { return }
-        page.update(groups: groups(for: resource))
-    }
-
-    private func groups(for resource: ProcessMonitor.Resource) -> [ProcessMonitor.Group] {
-        switch resource {
-        case .cpu: return allGroups
-        case .memory: return allMemoryGroups
-        }
+        page.update(entries: allProcesses)
     }
 
     private func resetProcessNavigation() {

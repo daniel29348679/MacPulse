@@ -44,9 +44,6 @@ final class Settings {
         static let sparklineWindow    = "macpulse.sparkline.window"    // seconds
         static let menuBarVisible     = "macpulse.menuBar.visible"     // [Metric.rawValue]
         static let popoverVisible     = "macpulse.popover.visible"     // [Metric.rawValue]
-        static let topProcessCount    = "macpulse.topProcessCount"     // Int
-        static let processesCollapsed = "macpulse.processesCollapsed"  // Bool
-        static let memoryProcessesCollapsed = "macpulse.memoryProcessesCollapsed"  // Bool
     }
 
     static let allowedIntervals: [TimeInterval] = [0.5, 1.0, 3.0, 5.0, 10.0]
@@ -54,9 +51,6 @@ final class Settings {
 
     static let allowedSparklineWindows: [TimeInterval] = [30, 60, 120, 300, 600]
     static let defaultSparklineWindow: TimeInterval = 60
-
-    static let allowedTopProcessCounts: [Int] = [3, 5, 10, 15]
-    static let defaultTopProcessCount: Int = 5
 
     /// 給 UI 用的字串標籤（整數秒不顯示小數）
     static func intervalLabel(_ interval: TimeInterval) -> String {
@@ -118,35 +112,6 @@ final class Settings {
         set {
             writeMetrics(newValue, key: Keys.popoverVisible)
             NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)
-        }
-    }
-
-    /// CPU 區塊預設要顯示的行程數量
-    var topProcessCount: Int {
-        get {
-            let stored = defaults.integer(forKey: Keys.topProcessCount)
-            return Self.allowedTopProcessCounts.contains(stored) ? stored : Self.defaultTopProcessCount
-        }
-        set {
-            guard Self.allowedTopProcessCounts.contains(newValue) else { return }
-            defaults.set(newValue, forKey: Keys.topProcessCount)
-            NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)
-        }
-    }
-
-    /// TOP PROCESSES 區塊是否摺疊（不影響資料抓取，純 UI 狀態）
-    var processesCollapsed: Bool {
-        get { defaults.bool(forKey: Keys.processesCollapsed) }
-        set {
-            defaults.set(newValue, forKey: Keys.processesCollapsed)
-        }
-    }
-
-    /// TOP MEMORY PROCESSES 區塊是否摺疊（不影響資料抓取，純 UI 狀態）
-    var memoryProcessesCollapsed: Bool {
-        get { defaults.bool(forKey: Keys.memoryProcessesCollapsed) }
-        set {
-            defaults.set(newValue, forKey: Keys.memoryProcessesCollapsed)
         }
     }
 
