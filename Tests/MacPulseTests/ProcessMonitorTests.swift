@@ -6,6 +6,7 @@ enum ProcessMonitorTests {
         MacPulseTestCase("ProcessMonitor live sample includes own process", testLiveSampleIncludesOwnProcess),
         MacPulseTestCase("ProcessMonitor live sample measures busy process CPU", testLiveSampleMeasuresBusyProcessCPU),
         MacPulseTestCase("ProcessMonitor force-kills a sampled child process", testForceKillsSampledChildProcess),
+        MacPulseTestCase("ProcessMonitor rejects stale identity before force kill", testRejectsStaleIdentityBeforeForceKill),
         MacPulseTestCase("ProcessMonitor displayName uses binary basename", testDisplayNameUsesBinaryBaseName),
         MacPulseTestCase("ProcessMonitor displayName keeps kernel names", testDisplayNameKeepsKernelStyleNames),
         MacPulseTestCase("ProcessMonitor displayName adds interpreter script", testDisplayNameAddsScriptForInterpreters),
@@ -117,6 +118,51 @@ enum ProcessMonitorTests {
         }
         child.waitUntilExit()
         try expect(!child.isRunning, "force-killed child is still running")
+    }
+
+    static func testRejectsStaleIdentityBeforeForceKill() throws {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/yes")
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        defer {
+            if child.isRunning {
+                child.terminate()
+                child.waitUntilExit()
+            }
+        }
+
+        let monitor = ProcessMonitor()
+        _ = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit)
+        Thread.sleep(forTimeInterval: 0.15)
+        let snapshot = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit)
+        let pid = child.processIdentifier
+        guard let sampled = snapshot.cpuGroups.flatMap(\.entries).first(where: { $0.pid == pid }) else {
+            throw MacPulseTestFailure(message: "spawned child missing from process sample",
+                                      file: #filePath,
+                                      line: #line)
+        }
+        let staleIdentity = ProcessMonitor.ProcessIdentity(
+            startTimeSeconds: sampled.identity.startTimeSeconds + 1,
+            startTimeMicroseconds: sampled.identity.startTimeMicroseconds,
+            uid: sampled.identity.uid
+        )
+        let staleEntry = ProcessMonitor.Entry(pid: sampled.pid,
+                                              name: sampled.name,
+                                              command: sampled.command,
+                                              cpuPercent: sampled.cpuPercent,
+                                              memoryBytes: sampled.memoryBytes,
+                                              identity: staleIdentity)
+
+        switch monitor.forceKill(staleEntry) {
+        case .staleProcess: break
+        default:
+            throw MacPulseTestFailure(message: "stale process identity was not rejected",
+                                      file: #filePath,
+                                      line: #line)
+        }
+        try expect(child.isRunning, "stale identity unexpectedly killed the child")
     }
 
     static func testDisplayNameUsesBinaryBaseName() throws {

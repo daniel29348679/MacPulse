@@ -13,7 +13,7 @@ import Foundation
 /// 彙總成一個 Group 回傳 — 個別看每個 helper 都不起眼，加總才反映真實
 /// 佔用。Quit / Force Kill 仍以個別 Entry 為單位，不對整組操作。
 final class ProcessMonitor {
-    enum Resource {
+    enum Resource: Hashable {
         case cpu
         case memory
     }

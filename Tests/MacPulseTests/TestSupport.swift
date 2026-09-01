@@ -67,6 +67,7 @@ private enum MacPulseTestRunner {
             ByteFormatterTests.tests,
             UpdaterTests.tests,
             ProcessMonitorTests.tests,
+            ProcessNavigationStateTests.tests,
             NetworkMonitorTests.tests,
             SettingsTests.tests
         ].flatMap { $0 }

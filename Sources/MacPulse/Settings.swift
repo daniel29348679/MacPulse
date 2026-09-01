@@ -57,8 +57,6 @@ final class Settings {
 
     static let allowedTopProcessCounts: [Int] = [3, 5, 10, 15]
     static let defaultTopProcessCount: Int = 5
-    /// 「More ▸」展開時最多再列幾筆（在 inline 顯示的 N 個之上）。
-    static let extraTopProcessCount: Int = 15
 
     /// 給 UI 用的字串標籤（整數秒不顯示小數）
     static func intervalLabel(_ interval: TimeInterval) -> String {
@@ -141,7 +139,6 @@ final class Settings {
         get { defaults.bool(forKey: Keys.processesCollapsed) }
         set {
             defaults.set(newValue, forKey: Keys.processesCollapsed)
-            NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)
         }
     }
 
@@ -150,7 +147,6 @@ final class Settings {
         get { defaults.bool(forKey: Keys.memoryProcessesCollapsed) }
         set {
             defaults.set(newValue, forKey: Keys.memoryProcessesCollapsed)
-            NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)
         }
     }
 

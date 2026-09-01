@@ -242,8 +242,9 @@ final class StatusBarController: NSObject {
     }
 
     private func refreshProcessList() {
-        let needed = Settings.shared.topProcessCount + Settings.extraTopProcessCount
-        processes.sample(limit: needed) { [weak self] snapshot in
+        // The overview still shows the configured Top N, while the pushed
+        // process browser can use the complete bounded snapshot.
+        processes.sample(limit: ProcessMonitor.hardLimit) { [weak self] snapshot in
             self?.popoverController.updateProcesses(snapshot.cpuGroups)
             self?.popoverController.updateMemoryProcesses(snapshot.memoryGroups)
         }

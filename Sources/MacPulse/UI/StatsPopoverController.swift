@@ -17,6 +17,13 @@ final class StatsPopoverController: NSViewController {
     }()
     private let scrollDocumentView = FlippedDocumentView()
     private var preferredScreen: NSScreen?
+    private let overviewPageController = NSViewController()
+    private var navigationContainer: NSView?
+    private var processNavigation = ProcessNavigationState()
+    private var processPageControllers: [NSViewController] = []
+    private var processPageReturnFocusViews: [NSView?] = []
+    private var isProcessTransitioning = false
+    private var pendingProcessNavigationReset = false
     private let emptyStateView: NSStackView = {
         let title = NSTextField(labelWithString: "No metrics selected")
         title.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
@@ -73,13 +80,18 @@ final class StatsPopoverController: NSViewController {
         return s
     }()
     private let moreProcessesButton: NSButton = {
-        let button = NSButton(title: "Show More", target: nil, action: nil)
+        let button = NSButton(title: "View Processes", target: nil, action: nil)
         button.bezelStyle = .accessoryBarAction
         button.isBordered = false
         button.contentTintColor = .controlAccentColor
         button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        button.toolTip = "Show additional processes"
-        button.setAccessibilityLabel("Show additional processes")
+        if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
+            button.image = image.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        }
+        button.imagePosition = .imageTrailing
+        button.imageHugsTitle = true
+        button.toolTip = "Browse CPU processes"
+        button.setAccessibilityLabel("Browse CPU processes")
         return button
     }()
     private var processRows: [ProcessRowControl] = []
@@ -122,13 +134,18 @@ final class StatsPopoverController: NSViewController {
         return s
     }()
     private let moreMemoryProcessesButton: NSButton = {
-        let button = NSButton(title: "Show More", target: nil, action: nil)
+        let button = NSButton(title: "View Processes", target: nil, action: nil)
         button.bezelStyle = .accessoryBarAction
         button.isBordered = false
         button.contentTintColor = .controlAccentColor
         button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        button.toolTip = "Show additional memory processes"
-        button.setAccessibilityLabel("Show additional memory processes")
+        if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
+            button.image = image.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        }
+        button.imagePosition = .imageTrailing
+        button.imageHugsTitle = true
+        button.toolTip = "Browse memory processes"
+        button.setAccessibilityLabel("Browse memory processes")
         return button
     }()
     private var memoryProcessRows: [ProcessRowControl] = []
@@ -216,7 +233,7 @@ final class StatsPopoverController: NSViewController {
         let cpuRow = headerRow(metric: .cpu, valueView: cpuValueLabel)
 
         moreProcessesButton.target = self
-        moreProcessesButton.action = #selector(showMoreProcessesMenu(_:))
+        moreProcessesButton.action = #selector(showCPUProcessesPage(_:))
         processesHeaderButton.target = self
         processesHeaderButton.action = #selector(toggleProcessesCollapsed)
 
@@ -265,7 +282,7 @@ final class StatsPopoverController: NSViewController {
         memDetails.spacing = 8
 
         moreMemoryProcessesButton.target = self
-        moreMemoryProcessesButton.action = #selector(showMoreMemoryProcessesMenu(_:))
+        moreMemoryProcessesButton.action = #selector(showMemoryProcessesPage(_:))
         memoryProcessesHeaderButton.target = self
         memoryProcessesHeaderButton.action = #selector(toggleMemoryProcessesCollapsed)
 
@@ -389,13 +406,16 @@ final class StatsPopoverController: NSViewController {
         scrollDocumentView.translatesAutoresizingMaskIntoConstraints = false
         scrollDocumentView.addSubview(rootStack)
         scrollView.documentView = scrollDocumentView
+        scrollView.translatesAutoresizingMaskIntoConstraints = true
+        scrollView.frame = container.bounds
+        scrollView.autoresizingMask = [.width, .height]
+        overviewPageController.view = scrollView
+        addChild(overviewPageController)
+        container.wantsLayer = true
+        container.layer?.masksToBounds = true
         container.addSubview(scrollView)
+        navigationContainer = container
         NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-
             scrollDocumentView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
             scrollDocumentView.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
             scrollDocumentView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
@@ -452,7 +472,8 @@ final class StatsPopoverController: NSViewController {
 
     @objc private func toggleProcessesCollapsed() {
         Settings.shared.processesCollapsed.toggle()
-        // settingsChanged 通知會回頭呼叫 applyProcessSettings()，這裡不用再做事
+        applyProcessesCollapsedState()
+        adjustPreferredSize()
     }
 
     private func applyMemoryProcessesCollapsedState() {
@@ -469,6 +490,8 @@ final class StatsPopoverController: NSViewController {
 
     @objc private func toggleMemoryProcessesCollapsed() {
         Settings.shared.memoryProcessesCollapsed.toggle()
+        applyMemoryProcessesCollapsedState()
+        adjustPreferredSize()
     }
 
     // MARK: - Process list
@@ -484,7 +507,7 @@ final class StatsPopoverController: NSViewController {
             let row = ProcessRowControl()
             row.translatesAutoresizingMaskIntoConstraints = false
             row.onClick = { [weak self] group, anchor in
-                self?.showActionMenu(for: group, anchor: anchor)
+                self?.showProcessGroupOrEntry(group, resource: .cpu, returnFocusTo: anchor)
             }
             processListStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: processListStack.widthAnchor).isActive = true
@@ -504,7 +527,7 @@ final class StatsPopoverController: NSViewController {
             let row = ProcessRowControl(resource: .memory)
             row.translatesAutoresizingMaskIntoConstraints = false
             row.onClick = { [weak self] group, anchor in
-                self?.showActionMenu(for: group, resource: .memory, anchor: anchor)
+                self?.showProcessGroupOrEntry(group, resource: .memory, returnFocusTo: anchor)
             }
             memoryProcessListStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: memoryProcessListStack.widthAnchor).isActive = true
@@ -519,12 +542,13 @@ final class StatsPopoverController: NSViewController {
         let extrasBefore = allGroups.count > topCount
         allGroups = groups
         updateProcessRowContents()
+        updateVisibleProcessPage(for: .cpu)
         // 列高固定 — 只有可見列數或 More 按鈕的顯示狀態改變時才需要
         // 重新 layout；每秒對整棵 view tree 跑 layoutSubtreeIfNeeded 太浪費。
         let rowsAfter = min(allGroups.count, processRows.count)
         let extrasAfter = allGroups.count > topCount
         if rowsBefore != rowsAfter || extrasBefore != extrasAfter {
-            adjustPreferredSize()
+            adjustPreferredSize(preservingVisibleSize: true)
         }
     }
 
@@ -534,10 +558,11 @@ final class StatsPopoverController: NSViewController {
         let extrasBefore = allMemoryGroups.count > topCount
         allMemoryGroups = groups
         updateMemoryProcessRowContents()
+        updateVisibleProcessPage(for: .memory)
         let rowsAfter = min(allMemoryGroups.count, memoryProcessRows.count)
         let extrasAfter = allMemoryGroups.count > topCount
         if rowsBefore != rowsAfter || extrasBefore != extrasAfter {
-            adjustPreferredSize()
+            adjustPreferredSize(preservingVisibleSize: true)
         }
     }
 
@@ -557,118 +582,235 @@ final class StatsPopoverController: NSViewController {
         applyMemoryProcessesCollapsedState()
     }
 
-    @objc private func showMoreProcessesMenu(_ sender: NSButton) {
-        showMoreProcessesMenu(sender, groups: allGroups, resource: .cpu)
+    @objc private func showCPUProcessesPage(_ sender: NSButton) {
+        pushProcessPage(.list(.cpu), returnFocusTo: sender)
     }
 
-    @objc private func showMoreMemoryProcessesMenu(_ sender: NSButton) {
-        showMoreProcessesMenu(sender, groups: allMemoryGroups, resource: .memory)
+    @objc private func showMemoryProcessesPage(_ sender: NSButton) {
+        pushProcessPage(.list(.memory), returnFocusTo: sender)
     }
 
-    private func showMoreProcessesMenu(_ sender: NSButton,
-                                       groups: [ProcessMonitor.Group],
-                                       resource: ProcessMonitor.Resource) {
-        let visible = Settings.shared.topProcessCount
-        let extras = Array(groups.dropFirst(visible))
-        let menu = NSMenu()
-        if extras.isEmpty {
-            let empty = NSMenuItem(title: "No additional processes", action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            menu.addItem(empty)
+    private func showProcessGroupOrEntry(_ group: ProcessMonitor.Group,
+                                         resource: ProcessMonitor.Resource,
+                                         returnFocusTo view: NSView) {
+        if group.entries.count == 1, let entry = group.entries.first {
+            showProcessEntry(entry,
+                             groupName: group.name,
+                             resource: resource,
+                             returnFocusTo: view)
         } else {
-            for group in extras {
-                let suffix = group.count > 1 ? " ×\(group.count)" : ""
-                let title = "\(group.name)\(suffix)   \(resource.formattedValue(for: group))"
-                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-                item.submenu = buildGroupMenu(for: group, resource: resource, includeHeader: false)
-                menu.addItem(item)
+            pushProcessPage(.group(resource, name: group.name),
+                            returnFocusTo: view)
+        }
+    }
+
+    private func showProcessEntry(_ entry: ProcessMonitor.Entry,
+                                  groupName: String,
+                                  resource: ProcessMonitor.Resource,
+                                  returnFocusTo view: NSView) {
+        pushProcessPage(
+            .entry(resource, groupName: groupName, id: ProcessEntryID(entry)),
+            fallbackEntry: entry,
+            returnFocusTo: view
+        )
+    }
+
+    private func pushProcessPage(_ route: ProcessNavigationState.Route,
+                                 fallbackEntry: ProcessMonitor.Entry? = nil,
+                                 returnFocusTo view: NSView) {
+        guard !isProcessTransitioning,
+              let destination = makeProcessPageController(route: route,
+                                                          fallbackEntry: fallbackEntry),
+              processNavigation.push(route) else { return }
+
+        let source = processPageControllers.last ?? overviewPageController
+        destination.view.frame = source.view.frame
+        destination.view.autoresizingMask = [.width, .height]
+        addChild(destination)
+        processPageControllers.append(destination)
+        processPageReturnFocusViews.append(view)
+        let options = processTransitionOptions(forward: true)
+        let completion = { [weak self, weak destination] in
+            guard let self else { return }
+            self.isProcessTransitioning = false
+            if self.pendingProcessNavigationReset {
+                self.resetProcessNavigation()
+                self.adjustPreferredSize()
+                return
+            }
+            if let destination {
+                self.focusProcessPage(destination)
             }
         }
-        menu.popUp(positioning: nil,
-                   at: NSPoint(x: 0, y: sender.bounds.height + 2),
-                   in: sender)
-    }
-
-    private func showActionMenu(for group: ProcessMonitor.Group,
-                                resource: ProcessMonitor.Resource = .cpu,
-                                anchor: NSView) {
-        let menu = buildGroupMenu(for: group, resource: resource, includeHeader: true)
-        menu.popUp(positioning: nil,
-                   at: NSPoint(x: anchor.bounds.midX, y: anchor.bounds.height),
-                   in: anchor)
-    }
-
-    /// 群組選單：單一成員直接沿用個別行程選單；多成員時列出每個 PID，
-    /// 各自帶 Quit / Force Kill 子選單 — 不提供「整組全殺」，同名不保證
-    /// 是同一個東西（例如兩個不相干的 bash）。
-    private func buildGroupMenu(for group: ProcessMonitor.Group,
-                                resource: ProcessMonitor.Resource,
-                                includeHeader: Bool) -> NSMenu {
-        if group.entries.count == 1 {
-            return buildActionMenu(for: group.entries[0], includeHeader: includeHeader)
+        if options.isEmpty {
+            let parent = source.view.superview ?? navigationContainer
+            source.view.removeFromSuperview()
+            parent?.addSubview(destination.view)
+            completion()
+        } else {
+            isProcessTransitioning = true
+            transition(from: source,
+                       to: destination,
+                       options: options,
+                       completionHandler: completion)
         }
-        let menu = NSMenu()
-        if includeHeader {
-            let title = "\(group.name) — \(group.count) processes · \(resource.formattedValue(for: group))"
-            let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            menu.addItem(header)
-            menu.addItem(.separator())
+    }
+
+    private func makeProcessPageController(route: ProcessNavigationState.Route,
+                                           fallbackEntry: ProcessMonitor.Entry?) -> NSViewController? {
+        let groups = groups(for: route.resource)
+        let page: ProcessPageView
+
+        switch route {
+        case .list(let resource):
+            let list = ProcessListPageView(resource: resource, groups: groups)
+            list.onSelectGroup = { [weak self] group, anchor in
+                self?.showProcessGroupOrEntry(group,
+                                              resource: resource,
+                                              returnFocusTo: anchor)
+            }
+            page = list
+
+        case .group(let resource, let name):
+            let group = ProcessGroupPageView(resource: resource,
+                                             groupName: name,
+                                             groups: groups)
+            group.onSelectEntry = { [weak self] entry, anchor in
+                self?.showProcessEntry(entry,
+                                       groupName: name,
+                                       resource: resource,
+                                       returnFocusTo: anchor)
+            }
+            page = group
+
+        case .entry(let resource, let groupName, let id):
+            let resolved = id.resolve(in: groups, groupName: groupName)
+            guard let entry = resolved ?? fallbackEntry else { return nil }
+            let detail = ProcessEntryPageView(resource: resource,
+                                              groupName: groupName,
+                                              entry: entry,
+                                              groups: groups)
+            detail.onCopyPID = { [weak self] pid in self?.copyPID(pid) }
+            detail.onAction = { [weak self] entry, action in
+                self?.confirmAndPerform(entry: entry, action: action)
+            }
+            page = detail
         }
-        for entry in group.entries {
-            let item = NSMenuItem(title: "PID \(entry.pid) — \(resource.formattedValue(for: entry))",
-                                  action: nil, keyEquivalent: "")
-            item.toolTip = entry.command
-            item.submenu = buildActionMenu(for: entry, includeHeader: true)
-            menu.addItem(item)
+
+        page.onBack = { [weak self] in self?.popProcessPage() }
+        let controller = NSViewController()
+        controller.view = page
+        return controller
+    }
+
+    private func popProcessPage() {
+        guard !isProcessTransitioning,
+              let source = processPageControllers.popLast() else { return }
+
+        let returnFocus = processPageReturnFocusViews.popLast() ?? nil
+        _ = processNavigation.goBack()
+        let destination = processPageControllers.last ?? overviewPageController
+        destination.view.frame = source.view.frame
+        destination.view.autoresizingMask = [.width, .height]
+        if let page = destination.view as? ProcessPageView,
+           let updating = page as? ProcessPageUpdating {
+            updating.update(groups: groups(for: page.resource))
         }
-        return menu
-    }
-
-    private func buildActionMenu(for entry: ProcessMonitor.Entry, includeHeader: Bool = false) -> NSMenu {
-        let menu = NSMenu()
-        if includeHeader {
-            let header = NSMenuItem(title: "\(entry.name) — PID \(entry.pid)", action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            menu.addItem(header)
-            menu.addItem(.separator())
+        let options = processTransitionOptions(forward: false)
+        let completion = { [weak self, weak source] in
+            guard let self else { return }
+            source?.removeFromParent()
+            self.isProcessTransitioning = false
+            if self.pendingProcessNavigationReset {
+                self.resetProcessNavigation()
+                self.adjustPreferredSize()
+                return
+            }
+            if self.processNavigation.isAtOverview {
+                self.adjustPreferredSize(preservingVisibleSize: true)
+            }
+            if let window = destination.view.window,
+               let returnFocus,
+               returnFocus.window === window,
+               window.makeFirstResponder(returnFocus) {
+                NSAccessibility.post(element: returnFocus, notification: .focusedUIElementChanged)
+            } else {
+                self.focusProcessPage(destination)
+            }
         }
-
-        let quit = NSMenuItem(title: "Quit", action: #selector(menuQuitProcess(_:)), keyEquivalent: "")
-        quit.target = self
-        quit.representedObject = entry
-        menu.addItem(quit)
-
-        let force = NSMenuItem(title: "Force Kill", action: #selector(menuForceKillProcess(_:)), keyEquivalent: "")
-        force.target = self
-        force.representedObject = entry
-        menu.addItem(force)
-
-        menu.addItem(.separator())
-
-        let copy = NSMenuItem(title: "Copy PID (\(entry.pid))", action: #selector(menuCopyPID(_:)), keyEquivalent: "")
-        copy.target = self
-        copy.representedObject = entry
-        menu.addItem(copy)
-
-        return menu
+        if options.isEmpty {
+            let parent = source.view.superview ?? navigationContainer
+            source.view.removeFromSuperview()
+            parent?.addSubview(destination.view)
+            completion()
+        } else {
+            isProcessTransitioning = true
+            transition(from: source,
+                       to: destination,
+                       options: options,
+                       completionHandler: completion)
+        }
     }
 
-    @objc private func menuQuitProcess(_ sender: NSMenuItem) {
-        guard let entry = sender.representedObject as? ProcessMonitor.Entry else { return }
-        confirmAndPerform(entry: entry, action: .quit)
+    private func processTransitionOptions(forward: Bool) -> NSViewController.TransitionOptions {
+        let shouldAnimate = view.window?.isVisible == true
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard shouldAnimate else { return [] }
+        return forward ? .slideForward : .slideBackward
     }
 
-    @objc private func menuForceKillProcess(_ sender: NSMenuItem) {
-        guard let entry = sender.representedObject as? ProcessMonitor.Entry else { return }
-        confirmAndPerform(entry: entry, action: .forceKill)
+    private func focusProcessPage(_ controller: NSViewController) {
+        guard controller.view.window?.isVisible == true else { return }
+        if let page = controller.view as? ProcessPageUpdating {
+            controller.view.window?.makeFirstResponder(page.preferredFocusView)
+            NSAccessibility.post(element: controller.view, notification: .layoutChanged)
+        } else {
+            controller.view.window?.makeFirstResponder(scrollView)
+            NSAccessibility.post(element: scrollView, notification: .layoutChanged)
+        }
     }
 
-    @objc private func menuCopyPID(_ sender: NSMenuItem) {
-        guard let entry = sender.representedObject as? ProcessMonitor.Entry else { return }
+    private func updateVisibleProcessPage(for resource: ProcessMonitor.Resource) {
+        guard processNavigation.current?.resource == resource,
+              let page = processPageControllers.last?.view as? ProcessPageUpdating else { return }
+        page.update(groups: groups(for: resource))
+    }
+
+    private func groups(for resource: ProcessMonitor.Resource) -> [ProcessMonitor.Group] {
+        switch resource {
+        case .cpu: return allGroups
+        case .memory: return allMemoryGroups
+        }
+    }
+
+    private func resetProcessNavigation() {
+        if isProcessTransitioning {
+            pendingProcessNavigationReset = true
+            return
+        }
+        pendingProcessNavigationReset = false
+        guard !processNavigation.isAtOverview
+                || !processPageControllers.isEmpty
+                || scrollView.superview == nil else { return }
+        for controller in processPageControllers {
+            controller.view.removeFromSuperview()
+            controller.removeFromParent()
+        }
+        processPageControllers.removeAll(keepingCapacity: true)
+        processPageReturnFocusViews.removeAll(keepingCapacity: true)
+        processNavigation.reset()
+        isProcessTransitioning = false
+
+        if scrollView.superview == nil, let navigationContainer {
+            scrollView.frame = navigationContainer.bounds
+            navigationContainer.addSubview(scrollView)
+        }
+    }
+
+    private func copyPID(_ pid: Int32) {
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.setString(String(entry.pid), forType: .string)
+        pb.setString(String(pid), forType: .string)
     }
 
     private func confirmAndPerform(entry: ProcessMonitor.Entry, action: ProcessAction) {
@@ -705,17 +847,21 @@ final class StatsPopoverController: NSViewController {
         adjustPreferredSize()
     }
 
-    private func adjustPreferredSize() {
+    private func adjustPreferredSize(preservingVisibleSize: Bool = false) {
         rootStack.layoutSubtreeIfNeeded()
         let contentHeight = max(rootStack.fittingSize.height, 80)
         let cappedHeight = min(contentHeight, maximumPopoverHeight())
-        scrollView.hasVerticalScroller = contentHeight > cappedHeight + 1
+        let visibleHeight = preferredContentSize.height > 0 ? preferredContentSize.height : cappedHeight
+        scrollView.hasVerticalScroller = contentHeight > visibleHeight + 1
+        guard processNavigation.isAtOverview else { return }
+        if preservingVisibleSize, isViewLoaded, view.window?.isVisible == true { return }
         preferredContentSize = NSSize(width: MacPulseVisualStyle.popoverWidth,
                                       height: cappedHeight)
     }
 
     func prepareForDisplay(on screen: NSScreen?) {
         preferredScreen = screen
+        resetProcessNavigation()
         adjustPreferredSize()
     }
 
@@ -1009,21 +1155,30 @@ final class ColorDotView: NSView {
 }
 
 /// 行程列表中的一列：左側顯示群組名稱（同名多行程時帶 ×N），
-/// 右側顯示加總 CPU 或 RAM，整行可點擊彈出選單。
-final class ProcessRowControl: NSControl {
+/// 右側顯示加總 CPU 或 RAM，整行可點擊進入詳細頁。
+final class ProcessRowControl: NSButton {
     private let nameLabel = NSTextField(labelWithString: "")
     private let valueLabel = NSTextField(labelWithString: "")
     private let chevron = NSImageView()
     private var trackingArea: NSTrackingArea?
     private var group: ProcessMonitor.Group?
     private let resource: ProcessMonitor.Resource
+    private var isPointerInside = false
+    private var hasPendingUpdate = false
+    private var pendingGroup: ProcessMonitor.Group?
 
-    /// 點擊時 callback：傳回該行群組與 anchor view（讓呼叫端決定要怎麼定位選單）。
+    /// 點擊時 callback：傳回該行群組與原列，讓返回時可恢復焦點。
     var onClick: ((ProcessMonitor.Group, NSView) -> Void)?
+    var isInteractionActive: Bool { isPointerInside || window?.firstResponder === self }
+    var isPointerInteractionActive: Bool { isPointerInside }
 
     init(resource: ProcessMonitor.Resource = .cpu) {
         self.resource = resource
         super.init(frame: .zero)
+        title = ""
+        isBordered = false
+        target = self
+        action = #selector(pressed)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = 8
@@ -1031,8 +1186,10 @@ final class ProcessRowControl: NSControl {
             layer?.cornerCurve = .continuous
         }
         setAccessibilityElement(true)
+        setAccessibilityRole(.button)
         setAccessibilityLabel("Process")
-        setAccessibilityHelp("Open process actions")
+        setAccessibilityHelp("Show process details")
+        focusRingType = .exterior
 
         nameLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
         nameLabel.textColor = .labelColor
@@ -1090,25 +1247,98 @@ final class ProcessRowControl: NSControl {
         trackingArea = area
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isEnabled, super.hitTest(point) != nil else { return nil }
+        return self
+    }
+
     override func mouseEntered(with event: NSEvent) {
+        isPointerInside = true
         guard group != nil else { return }
         layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
     }
 
     override func mouseExited(with event: NSEvent) {
+        isPointerInside = false
         layer?.backgroundColor = nil
+        applyPendingUpdateIfNeeded()
     }
 
-    override func mouseDown(with event: NSEvent) {
+    override var acceptsFirstResponder: Bool { true }
+    override var focusRingMaskBounds: NSRect { bounds.insetBy(dx: 2, dy: 2) }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: focusRingMaskBounds, xRadius: 7, yRadius: 7).fill()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result { applyPendingUpdateIfNeeded() }
+        return result
+    }
+
+    func update(_ group: ProcessMonitor.Group?) {
+        // Keep the target stable while it is being interacted with, but allow
+        // live metric updates when the represented processes have not changed.
+        // A missing process is disabled immediately so a stale target cannot run.
+        if group == nil {
+            if isInteractionActive {
+                let name = self.group?.name ?? nameLabel.stringValue
+                updateUnavailable(name: name)
+                hasPendingUpdate = true
+            } else {
+                hasPendingUpdate = false
+                pendingGroup = nil
+                applyUpdate(nil)
+            }
+            return
+        }
+        if isInteractionActive,
+           !Self.representsSameProcesses(self.group, group) {
+            pendingGroup = group
+            hasPendingUpdate = true
+            return
+        }
+        applyUpdate(group)
+    }
+
+    private static func representsSameProcesses(_ current: ProcessMonitor.Group?,
+                                                 _ update: ProcessMonitor.Group?) -> Bool {
+        guard let current, let update, current.name == update.name else { return false }
+        return Set(current.entries.map(ProcessEntryID.init))
+            == Set(update.entries.map(ProcessEntryID.init))
+    }
+
+    func updateUnavailable(name: String) {
+        group = nil
+        isEnabled = false
+        nameLabel.stringValue = name
+        valueLabel.stringValue = "Unavailable"
+        chevron.isHidden = true
+        isHidden = false
+        toolTip = "No longer in the current process list"
+        setAccessibilityLabel("\(name), unavailable")
+        setAccessibilityValue(nil)
+        setAccessibilityHelp("No longer in the current process list")
+    }
+
+    @objc private func pressed() {
         guard let group else { return }
         onClick?(group, self)
     }
 
-    override var acceptsFirstResponder: Bool { false }
+    private func applyPendingUpdateIfNeeded() {
+        guard hasPendingUpdate, !isInteractionActive else { return }
+        hasPendingUpdate = false
+        let update = pendingGroup
+        pendingGroup = nil
+        applyUpdate(update)
+    }
 
-    func update(_ group: ProcessMonitor.Group?) {
+    private func applyUpdate(_ group: ProcessMonitor.Group?) {
         self.group = group
         if let group {
+            isEnabled = true
             let suffix = group.count > 1 ? " ×\(group.count)" : ""
             nameLabel.stringValue = group.name + suffix
             valueLabel.stringValue = resource.formattedValue(for: group)
@@ -1119,8 +1349,9 @@ final class ProcessRowControl: NSControl {
                 ? "\(group.name), \(group.count) processes"
                 : "\(group.name), PID \(group.entries[0].pid)")
             setAccessibilityValue(resource.accessibilityValue(for: group))
-            setAccessibilityHelp("Open actions for \(group.name)")
+            setAccessibilityHelp("Show details for \(group.name)")
         } else {
+            isEnabled = false
             nameLabel.stringValue = "—"
             valueLabel.stringValue = ""
             chevron.isHidden = true
@@ -1149,7 +1380,7 @@ final class ProcessRowControl: NSControl {
     }
 }
 
-private extension ProcessMonitor.Resource {
+extension ProcessMonitor.Resource {
     var label: String {
         switch self {
         case .cpu: return "CPU"
