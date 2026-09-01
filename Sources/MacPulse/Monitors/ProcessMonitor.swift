@@ -1,7 +1,8 @@
 import Darwin
 import Foundation
 
-/// 透過 libproc + sysctl 取得依 CPU 使用率排序、同名彙總的行程群組清單。
+/// 透過 libproc + sysctl 取得依 CPU 或 resident memory 排序、
+/// 同名彙總的行程群組清單。
 /// 不再 fork `/bin/ps` — 在 menu bar app 上每秒 fork+exec 是最大的耗電來源之一。
 ///
 /// CPU% 算法：
@@ -12,6 +13,11 @@ import Foundation
 /// 彙總成一個 Group 回傳 — 個別看每個 helper 都不起眼，加總才反映真實
 /// 佔用。Quit / Force Kill 仍以個別 Entry 為單位，不對整組操作。
 final class ProcessMonitor {
+    enum Resource {
+        case cpu
+        case memory
+    }
+
     struct ProcessIdentity: Hashable {
         let startTimeSeconds: Int64
         let startTimeMicroseconds: Int32
@@ -23,7 +29,22 @@ final class ProcessMonitor {
         let name: String
         let command: String
         let cpuPercent: Double
+        let memoryBytes: UInt64
         let identity: ProcessIdentity
+
+        init(pid: Int32,
+             name: String,
+             command: String,
+             cpuPercent: Double,
+             memoryBytes: UInt64 = 0,
+             identity: ProcessIdentity) {
+            self.pid = pid
+            self.name = name
+            self.command = command
+            self.cpuPercent = cpuPercent
+            self.memoryBytes = memoryBytes
+            self.identity = identity
+        }
     }
 
     /// 同顯示名稱行程的彙總群組 — 列表顯示以群組為單位。
@@ -31,9 +52,16 @@ final class ProcessMonitor {
         let name: String
         /// 群組內所有行程的 CPU% 加總（與 Entry 同一把全機尺度）。
         let totalCpuPercent: Double
-        /// 依 CPU% 遞減排序的成員，至少一筆。
+        /// 群組內所有行程的 resident memory 加總。
+        let totalMemoryBytes: UInt64
+        /// 依目前清單指標遞減排序的成員，至少一筆。
         let entries: [Entry]
         var count: Int { entries.count }
+    }
+
+    struct Snapshot {
+        let cpuGroups: [Group]
+        let memoryGroups: [Group]
     }
 
     /// 一次最多回傳幾組 — 設定上限避免 UI 列太多。
@@ -45,9 +73,24 @@ final class ProcessMonitor {
     struct RawSample: Equatable {
         let pid: Int32
         let cumulativeCpuNs: UInt64
+        let memoryBytes: UInt64
         let identity: ProcessIdentity
         let command: String
         let name: String
+
+        init(pid: Int32,
+             cumulativeCpuNs: UInt64,
+             memoryBytes: UInt64 = 0,
+             identity: ProcessIdentity,
+             command: String,
+             name: String) {
+            self.pid = pid
+            self.cumulativeCpuNs = cumulativeCpuNs
+            self.memoryBytes = memoryBytes
+            self.identity = identity
+            self.command = command
+            self.name = name
+        }
     }
 
     /// 上一筆樣本，用來算 cumulative CPU 時間的 delta。
@@ -82,25 +125,30 @@ final class ProcessMonitor {
 
     /// 非同步取樣。若上一筆還沒回來會直接略過這次呼叫（避免堆積）。
     /// `limit` 是回傳的「群組」數上限。
-    func sample(limit: Int, completion: @escaping ([Group]) -> Void) {
+    func sample(limit: Int, completion: @escaping (Snapshot) -> Void) {
         let cappedLimit = max(1, min(limit, Self.hardLimit))
         if inFlight { return }
         inFlight = true
         queue.async { [weak self] in
-            let groups = self?.run(limit: cappedLimit) ?? []
+            let snapshot = self?.run(limit: cappedLimit)
+                ?? Snapshot(cpuGroups: [], memoryGroups: [])
             DispatchQueue.main.async {
                 self?.inFlight = false
-                completion(groups)
+                completion(snapshot)
             }
         }
     }
 
     /// 同步版本 — 給單元測試或極少數需要立即取得的場合用。
     func sampleSync(limit: Int) -> [Group] {
+        return sampleSnapshotSync(limit: limit).cpuGroups
+    }
+
+    func sampleSnapshotSync(limit: Int) -> Snapshot {
         return queue.sync { self.run(limit: max(1, min(limit, Self.hardLimit))) }
     }
 
-    private func run(limit: Int) -> [Group] {
+    private func run(limit: Int) -> Snapshot {
         let nowMach = mach_absolute_time()
         let elapsedNs: Double = {
             guard previousMach > 0, nowMach > previousMach else { return 0 }
@@ -118,7 +166,8 @@ final class ProcessMonitor {
             activeProcessorCount: ProcessInfo.processInfo.activeProcessorCount,
             limit: Int.max
         )
-        let groups = Self.groupEntries(entries, limit: limit)
+        let cpuGroups = Self.groupEntries(entries, limit: limit, sortedBy: .cpu)
+        let memoryGroups = Self.groupEntries(entries, limit: limit, sortedBy: .memory)
 
         // 用本次的 raw 取代 previous — 下次 tick 才有 delta 可算。
         var newPrev: [Int32: PreviousSnapshot] = [:]
@@ -129,7 +178,7 @@ final class ProcessMonitor {
         }
         previousSnapshots = newPrev
         previousMach = nowMach
-        return groups
+        return Snapshot(cpuGroups: cpuGroups, memoryGroups: memoryGroups)
     }
 
     // MARK: - Pure compute (testable)
@@ -161,6 +210,7 @@ final class ProcessMonitor {
                                  name: s.name,
                                  command: s.command,
                                  cpuPercent: pct,
+                                 memoryBytes: s.memoryBytes,
                                  identity: s.identity))
         }
         entries.sort { $0.cpuPercent > $1.cpuPercent }
@@ -168,27 +218,48 @@ final class ProcessMonitor {
         return entries
     }
 
-    /// 把（已依 CPU% 遞減排序的）entries 依顯示名稱彙總成群組，
-    /// 依總 CPU% 遞減排序後套 limit。
+    /// 把 entries 依顯示名稱彙總成群組，依指定指標遞減排序後套 limit。
     ///
     /// 彙總必須發生在截斷「之前」— 先截斷 top-N 再加總會漏掉沒進前
     /// N 名的同名 helper，群組總和會低估（Chrome 30 個 helper 各 0.3%
     /// 就是這種情況）。
-    static func groupEntries(_ entries: [Entry], limit: Int) -> [Group] {
+    static func groupEntries(_ entries: [Entry],
+                             limit: Int,
+                             sortedBy resource: Resource = .cpu) -> [Group] {
         var byName: [String: [Entry]] = [:]
         for entry in entries {
             byName[entry.name, default: []].append(entry)
         }
         var groups = byName.map { name, members in
-            Group(name: name,
-                  totalCpuPercent: members.reduce(0) { $0 + $1.cpuPercent },
-                  entries: members)   // 成員沿用輸入的遞減排序
+            let sortedMembers = members.sorted { lhs, rhs in
+                switch resource {
+                case .cpu:
+                    return lhs.cpuPercent != rhs.cpuPercent
+                        ? lhs.cpuPercent > rhs.cpuPercent
+                        : lhs.pid < rhs.pid
+                case .memory:
+                    return lhs.memoryBytes != rhs.memoryBytes
+                        ? lhs.memoryBytes > rhs.memoryBytes
+                        : lhs.pid < rhs.pid
+                }
+            }
+            return Group(name: name,
+                         totalCpuPercent: members.reduce(0) { $0 + $1.cpuPercent },
+                         totalMemoryBytes: members.reduce(0) { $0 + $1.memoryBytes },
+                         entries: sortedMembers)
         }
-        // 總量相同時（例如第一個 tick 全為 0）按名稱排 — 清單才不會每秒亂跳
+        // 總量相同時按名稱排 — 清單才不會每秒亂跳。
         groups.sort {
-            $0.totalCpuPercent != $1.totalCpuPercent
-                ? $0.totalCpuPercent > $1.totalCpuPercent
-                : $0.name < $1.name
+            switch resource {
+            case .cpu:
+                return $0.totalCpuPercent != $1.totalCpuPercent
+                    ? $0.totalCpuPercent > $1.totalCpuPercent
+                    : $0.name < $1.name
+            case .memory:
+                return $0.totalMemoryBytes != $1.totalMemoryBytes
+                    ? $0.totalMemoryBytes > $1.totalMemoryBytes
+                    : $0.name < $1.name
+            }
         }
         if groups.count > limit { groups.removeLast(groups.count - limit) }
         return groups
@@ -235,7 +306,7 @@ final class ProcessMonitor {
         for i in 0..<count {
             let pid = pids[i]
             guard pid > 0 else { continue }
-            guard let cumulativeNs = Self.taskCumulativeCpuNs(pid: pid) else { continue }
+            guard let taskStats = Self.taskStats(pid: pid) else { continue }
             guard let identity = Self.processIdentity(for: pid) else { continue }
             let command: String
             let name: String
@@ -249,7 +320,8 @@ final class ProcessMonitor {
             }
             newCache[pid] = CachedCommand(identity: identity, command: command, name: name)
             samples.append(RawSample(pid: pid,
-                                     cumulativeCpuNs: cumulativeNs,
+                                     cumulativeCpuNs: taskStats.cumulativeCpuNs,
+                                     memoryBytes: taskStats.memoryBytes,
                                      identity: identity,
                                      command: command,
                                      name: name))
@@ -258,7 +330,7 @@ final class ProcessMonitor {
         return samples
     }
 
-    private static func taskCumulativeCpuNs(pid: Int32) -> UInt64? {
+    private static func taskStats(pid: Int32) -> (cumulativeCpuNs: UInt64, memoryBytes: UInt64)? {
         var info = proc_taskinfo()
         let size = MemoryLayout<proc_taskinfo>.size
         let ret = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
@@ -270,7 +342,8 @@ final class ProcessMonitor {
         // 常見誤解的來源），Apple Silicon 是 24 MHz tick（timebase 125/3），
         // 直接當 ns 用會把 CPU% 少算 ~41.7 倍、全部顯示成 0。
         let machUnits = info.pti_total_user &+ info.pti_total_system
-        return machUnits &* UInt64(machTimebase.numer) / UInt64(machTimebase.denom)
+        let cumulativeCpuNs = machUnits &* UInt64(machTimebase.numer) / UInt64(machTimebase.denom)
+        return (cumulativeCpuNs, UInt64(info.pti_resident_size))
     }
 
     private static func processIdentity(for pid: Int32) -> ProcessIdentity? {

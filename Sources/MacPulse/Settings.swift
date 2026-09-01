@@ -46,6 +46,7 @@ final class Settings {
         static let popoverVisible     = "macpulse.popover.visible"     // [Metric.rawValue]
         static let topProcessCount    = "macpulse.topProcessCount"     // Int
         static let processesCollapsed = "macpulse.processesCollapsed"  // Bool
+        static let memoryProcessesCollapsed = "macpulse.memoryProcessesCollapsed"  // Bool
     }
 
     static let allowedIntervals: [TimeInterval] = [0.5, 1.0, 3.0, 5.0, 10.0]
@@ -140,6 +141,15 @@ final class Settings {
         get { defaults.bool(forKey: Keys.processesCollapsed) }
         set {
             defaults.set(newValue, forKey: Keys.processesCollapsed)
+            NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)
+        }
+    }
+
+    /// TOP MEMORY PROCESSES 區塊是否摺疊（不影響資料抓取，純 UI 狀態）
+    var memoryProcessesCollapsed: Bool {
+        get { defaults.bool(forKey: Keys.memoryProcessesCollapsed) }
+        set {
+            defaults.set(newValue, forKey: Keys.memoryProcessesCollapsed)
             NotificationCenter.default.post(name: .macPulseSettingsChanged, object: nil)
         }
     }

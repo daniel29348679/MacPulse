@@ -235,7 +235,7 @@ final class StatusBarController: NSObject {
                                      disk: lastDisk,
                                      temperature: lastTemperature,
                                      power: lastPower)
-            if Settings.shared.popoverMetrics.contains(.cpu) {
+            if !Settings.shared.popoverMetrics.isDisjoint(with: [.cpu, .memory]) {
                 refreshProcessList()
             }
         }
@@ -243,8 +243,9 @@ final class StatusBarController: NSObject {
 
     private func refreshProcessList() {
         let needed = Settings.shared.topProcessCount + Settings.extraTopProcessCount
-        processes.sample(limit: needed) { [weak self] groups in
-            self?.popoverController.updateProcesses(groups)
+        processes.sample(limit: needed) { [weak self] snapshot in
+            self?.popoverController.updateProcesses(snapshot.cpuGroups)
+            self?.popoverController.updateMemoryProcesses(snapshot.memoryGroups)
         }
     }
 

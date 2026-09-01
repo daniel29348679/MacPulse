@@ -99,6 +99,41 @@ final class StatsPopoverController: NSViewController {
     private let swapUsedLabel = StatsPopoverController.makeSecondaryLabel()
     private let memSparkline = SparklineView(capacity: 60)
 
+    // Top memory processes (within the Memory section)
+    private let memoryProcessesHeaderButton: NSButton = {
+        let button = NSButton(title: "Top Memory Processes", target: nil, action: nil)
+        button.bezelStyle = .accessoryBarAction
+        button.isBordered = false
+        button.alignment = .left
+        button.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        button.contentTintColor = .secondaryLabelColor
+        button.imagePosition = .imageLeading
+        button.imageHugsTitle = true
+        button.toolTip = "Click to collapse / expand"
+        button.setAccessibilityLabel("Top memory processes")
+        button.setAccessibilityHelp("Collapse or expand the top memory processes list.")
+        return button
+    }()
+    private let memoryProcessListStack: NSStackView = {
+        let s = NSStackView()
+        s.orientation = .vertical
+        s.alignment = .leading
+        s.spacing = 1
+        return s
+    }()
+    private let moreMemoryProcessesButton: NSButton = {
+        let button = NSButton(title: "Show More", target: nil, action: nil)
+        button.bezelStyle = .accessoryBarAction
+        button.isBordered = false
+        button.contentTintColor = .controlAccentColor
+        button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        button.toolTip = "Show additional memory processes"
+        button.setAccessibilityLabel("Show additional memory processes")
+        return button
+    }()
+    private var memoryProcessRows: [ProcessRowControl] = []
+    private var allMemoryGroups: [ProcessMonitor.Group] = []
+
     // Network
     private let downLabel = StatsPopoverController.makeRateLabel()
     private let upLabel = StatsPopoverController.makeRateLabel()
@@ -228,12 +263,32 @@ final class StatsPopoverController: NSViewController {
         memDetails.orientation = .horizontal
         memDetails.alignment = .firstBaseline
         memDetails.spacing = 8
-        let memSection = stack([memRow, memDetails, memSparkline], spacing: 7)
+
+        moreMemoryProcessesButton.target = self
+        moreMemoryProcessesButton.action = #selector(showMoreMemoryProcessesMenu(_:))
+        memoryProcessesHeaderButton.target = self
+        memoryProcessesHeaderButton.action = #selector(toggleMemoryProcessesCollapsed)
+
+        let memoryProcessesSection = stack(
+            [memoryProcessesHeaderButton, memoryProcessListStack, moreMemoryProcessesButton],
+            spacing: 4
+        )
+        let memSection = stack([memRow, memDetails, memSparkline, memoryProcessesSection], spacing: 7)
         memDetails.translatesAutoresizingMaskIntoConstraints = false
         memDetails.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
         memRow.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
         memSparkline.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
         sections[.memory] = popoverCard(around: memSection)
+
+        memoryProcessListStack.translatesAutoresizingMaskIntoConstraints = false
+        memoryProcessListStack.widthAnchor.constraint(equalTo: memoryProcessesSection.widthAnchor).isActive = true
+        memoryProcessesSection.translatesAutoresizingMaskIntoConstraints = false
+        memoryProcessesSection.widthAnchor.constraint(equalTo: memSection.widthAnchor).isActive = true
+        memoryProcessesHeaderButton.translatesAutoresizingMaskIntoConstraints = false
+        memoryProcessesHeaderButton.widthAnchor.constraint(equalTo: memoryProcessesSection.widthAnchor).isActive = true
+
+        rebuildMemoryProcessRows()
+        applyMemoryProcessesCollapsedState()
 
         // Network
         netSparkline.lineColor = .systemGreen
@@ -376,7 +431,9 @@ final class StatsPopoverController: NSViewController {
     /// 設定的 topProcessCount 改變時呼叫，調整 inline row 數量。
     func applyProcessSettings() {
         rebuildProcessRows()
+        rebuildMemoryProcessRows()
         applyProcessesCollapsedState()
+        applyMemoryProcessesCollapsedState()
         adjustPreferredSize()
     }
 
@@ -396,6 +453,22 @@ final class StatsPopoverController: NSViewController {
     @objc private func toggleProcessesCollapsed() {
         Settings.shared.processesCollapsed.toggle()
         // settingsChanged 通知會回頭呼叫 applyProcessSettings()，這裡不用再做事
+    }
+
+    private func applyMemoryProcessesCollapsedState() {
+        let collapsed = Settings.shared.memoryProcessesCollapsed
+        memoryProcessListStack.isHidden = collapsed
+        let hasExtras = allMemoryGroups.count > Settings.shared.topProcessCount
+        moreMemoryProcessesButton.isHidden = collapsed || !hasExtras
+        memoryProcessesHeaderButton.image = NSImage(
+            systemSymbolName: collapsed ? "chevron.right" : "chevron.down",
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        memoryProcessesHeaderButton.setAccessibilityValue(collapsed ? "Collapsed" : "Expanded")
+    }
+
+    @objc private func toggleMemoryProcessesCollapsed() {
+        Settings.shared.memoryProcessesCollapsed.toggle()
     }
 
     // MARK: - Process list
@@ -420,6 +493,26 @@ final class StatsPopoverController: NSViewController {
         updateProcessRowContents()
     }
 
+    private func rebuildMemoryProcessRows() {
+        let target = Settings.shared.topProcessCount
+        while memoryProcessRows.count > target {
+            let removed = memoryProcessRows.removeLast()
+            memoryProcessListStack.removeArrangedSubview(removed)
+            removed.removeFromSuperview()
+        }
+        while memoryProcessRows.count < target {
+            let row = ProcessRowControl(resource: .memory)
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.onClick = { [weak self] group, anchor in
+                self?.showActionMenu(for: group, resource: .memory, anchor: anchor)
+            }
+            memoryProcessListStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: memoryProcessListStack.widthAnchor).isActive = true
+            memoryProcessRows.append(row)
+        }
+        updateMemoryProcessRowContents()
+    }
+
     func updateProcesses(_ groups: [ProcessMonitor.Group]) {
         let topCount = Settings.shared.topProcessCount
         let rowsBefore = min(allGroups.count, processRows.count)
@@ -435,6 +528,19 @@ final class StatsPopoverController: NSViewController {
         }
     }
 
+    func updateMemoryProcesses(_ groups: [ProcessMonitor.Group]) {
+        let topCount = Settings.shared.topProcessCount
+        let rowsBefore = min(allMemoryGroups.count, memoryProcessRows.count)
+        let extrasBefore = allMemoryGroups.count > topCount
+        allMemoryGroups = groups
+        updateMemoryProcessRowContents()
+        let rowsAfter = min(allMemoryGroups.count, memoryProcessRows.count)
+        let extrasAfter = allMemoryGroups.count > topCount
+        if rowsBefore != rowsAfter || extrasBefore != extrasAfter {
+            adjustPreferredSize()
+        }
+    }
+
     private func updateProcessRowContents() {
         for (idx, row) in processRows.enumerated() {
             row.update(idx < allGroups.count ? allGroups[idx] : nil)
@@ -444,9 +550,26 @@ final class StatsPopoverController: NSViewController {
         applyProcessesCollapsedState()
     }
 
+    private func updateMemoryProcessRowContents() {
+        for (idx, row) in memoryProcessRows.enumerated() {
+            row.update(idx < allMemoryGroups.count ? allMemoryGroups[idx] : nil)
+        }
+        applyMemoryProcessesCollapsedState()
+    }
+
     @objc private func showMoreProcessesMenu(_ sender: NSButton) {
+        showMoreProcessesMenu(sender, groups: allGroups, resource: .cpu)
+    }
+
+    @objc private func showMoreMemoryProcessesMenu(_ sender: NSButton) {
+        showMoreProcessesMenu(sender, groups: allMemoryGroups, resource: .memory)
+    }
+
+    private func showMoreProcessesMenu(_ sender: NSButton,
+                                       groups: [ProcessMonitor.Group],
+                                       resource: ProcessMonitor.Resource) {
         let visible = Settings.shared.topProcessCount
-        let extras = Array(allGroups.dropFirst(visible))
+        let extras = Array(groups.dropFirst(visible))
         let menu = NSMenu()
         if extras.isEmpty {
             let empty = NSMenuItem(title: "No additional processes", action: nil, keyEquivalent: "")
@@ -455,9 +578,9 @@ final class StatsPopoverController: NSViewController {
         } else {
             for group in extras {
                 let suffix = group.count > 1 ? " ×\(group.count)" : ""
-                let title = String(format: "%@%@   %.1f%%", group.name, suffix, group.totalCpuPercent)
+                let title = "\(group.name)\(suffix)   \(resource.formattedValue(for: group))"
                 let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-                item.submenu = buildGroupMenu(for: group, includeHeader: false)
+                item.submenu = buildGroupMenu(for: group, resource: resource, includeHeader: false)
                 menu.addItem(item)
             }
         }
@@ -466,8 +589,10 @@ final class StatsPopoverController: NSViewController {
                    in: sender)
     }
 
-    private func showActionMenu(for group: ProcessMonitor.Group, anchor: NSView) {
-        let menu = buildGroupMenu(for: group, includeHeader: true)
+    private func showActionMenu(for group: ProcessMonitor.Group,
+                                resource: ProcessMonitor.Resource = .cpu,
+                                anchor: NSView) {
+        let menu = buildGroupMenu(for: group, resource: resource, includeHeader: true)
         menu.popUp(positioning: nil,
                    at: NSPoint(x: anchor.bounds.midX, y: anchor.bounds.height),
                    in: anchor)
@@ -476,21 +601,22 @@ final class StatsPopoverController: NSViewController {
     /// 群組選單：單一成員直接沿用個別行程選單；多成員時列出每個 PID，
     /// 各自帶 Quit / Force Kill 子選單 — 不提供「整組全殺」，同名不保證
     /// 是同一個東西（例如兩個不相干的 bash）。
-    private func buildGroupMenu(for group: ProcessMonitor.Group, includeHeader: Bool) -> NSMenu {
+    private func buildGroupMenu(for group: ProcessMonitor.Group,
+                                resource: ProcessMonitor.Resource,
+                                includeHeader: Bool) -> NSMenu {
         if group.entries.count == 1 {
             return buildActionMenu(for: group.entries[0], includeHeader: includeHeader)
         }
         let menu = NSMenu()
         if includeHeader {
-            let title = String(format: "%@ — %d processes · %.1f%%",
-                               group.name, group.count, group.totalCpuPercent)
+            let title = "\(group.name) — \(group.count) processes · \(resource.formattedValue(for: group))"
             let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             header.isEnabled = false
             menu.addItem(header)
             menu.addItem(.separator())
         }
         for entry in group.entries {
-            let item = NSMenuItem(title: String(format: "PID %d — %.1f%%", entry.pid, entry.cpuPercent),
+            let item = NSMenuItem(title: "PID \(entry.pid) — \(resource.formattedValue(for: entry))",
                                   action: nil, keyEquivalent: "")
             item.toolTip = entry.command
             item.submenu = buildActionMenu(for: entry, includeHeader: true)
@@ -883,18 +1009,20 @@ final class ColorDotView: NSView {
 }
 
 /// 行程列表中的一列：左側顯示群組名稱（同名多行程時帶 ×N），
-/// 右側顯示加總 CPU%，整行可點擊彈出選單。
+/// 右側顯示加總 CPU 或 RAM，整行可點擊彈出選單。
 final class ProcessRowControl: NSControl {
     private let nameLabel = NSTextField(labelWithString: "")
-    private let cpuLabel = NSTextField(labelWithString: "")
+    private let valueLabel = NSTextField(labelWithString: "")
     private let chevron = NSImageView()
     private var trackingArea: NSTrackingArea?
     private var group: ProcessMonitor.Group?
+    private let resource: ProcessMonitor.Resource
 
     /// 點擊時 callback：傳回該行群組與 anchor view（讓呼叫端決定要怎麼定位選單）。
     var onClick: ((ProcessMonitor.Group, NSView) -> Void)?
 
-    init() {
+    init(resource: ProcessMonitor.Resource = .cpu) {
+        self.resource = resource
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -914,12 +1042,12 @@ final class ProcessRowControl: NSControl {
         nameLabel.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
         nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        cpuLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        cpuLabel.textColor = .secondaryLabelColor
-        cpuLabel.alignment = .right
-        cpuLabel.translatesAutoresizingMaskIntoConstraints = false
-        cpuLabel.setContentHuggingPriority(.required, for: .horizontal)
-        cpuLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        valueLabel.textColor = .secondaryLabelColor
+        valueLabel.alignment = .right
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+        valueLabel.setContentHuggingPriority(.required, for: .horizontal)
+        valueLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         if let img = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
             chevron.image = img.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
@@ -928,7 +1056,7 @@ final class ProcessRowControl: NSControl {
         chevron.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(nameLabel)
-        addSubview(cpuLabel)
+        addSubview(valueLabel)
         addSubview(chevron)
 
         NSLayoutConstraint.activate([
@@ -937,11 +1065,11 @@ final class ProcessRowControl: NSControl {
             nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            cpuLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 8),
-            cpuLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            cpuLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            valueLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 8),
+            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            valueLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
-            chevron.leadingAnchor.constraint(equalTo: cpuLabel.trailingAnchor, constant: 4),
+            chevron.leadingAnchor.constraint(equalTo: valueLabel.trailingAnchor, constant: 4),
             chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 10)
@@ -983,18 +1111,18 @@ final class ProcessRowControl: NSControl {
         if let group {
             let suffix = group.count > 1 ? " ×\(group.count)" : ""
             nameLabel.stringValue = group.name + suffix
-            cpuLabel.stringValue = String(format: "%.1f%%", group.totalCpuPercent)
+            valueLabel.stringValue = resource.formattedValue(for: group)
             chevron.isHidden = false
             isHidden = false
-            toolTip = Self.tooltip(for: group)
+            toolTip = Self.tooltip(for: group, resource: resource)
             setAccessibilityLabel(group.count > 1
                 ? "\(group.name), \(group.count) processes"
                 : "\(group.name), PID \(group.entries[0].pid)")
-            setAccessibilityValue(String(format: "%.1f percent CPU", group.totalCpuPercent))
+            setAccessibilityValue(resource.accessibilityValue(for: group))
             setAccessibilityHelp("Open actions for \(group.name)")
         } else {
             nameLabel.stringValue = "—"
-            cpuLabel.stringValue = ""
+            valueLabel.stringValue = ""
             chevron.isHidden = true
             isHidden = true
             toolTip = nil
@@ -1004,21 +1132,52 @@ final class ProcessRowControl: NSControl {
         }
     }
 
-    private static func tooltip(for group: ProcessMonitor.Group) -> String {
+    private static func tooltip(for group: ProcessMonitor.Group,
+                                resource: ProcessMonitor.Resource) -> String {
         if group.entries.count == 1 {
             let entry = group.entries[0]
-            return String(format: "%@\nPID %d\nCPU %.1f%%",
-                          entry.command, entry.pid, entry.cpuPercent)
+            return "\(entry.command)\nPID \(entry.pid)\n\(resource.label) \(resource.formattedValue(for: entry))"
         }
-        var lines = [String(format: "%@ — %d processes · CPU %.1f%%",
-                            group.name, group.count, group.totalCpuPercent)]
+        var lines = ["\(group.name) — \(group.count) processes · \(resource.label) \(resource.formattedValue(for: group))"]
         for entry in group.entries.prefix(8) {
-            lines.append(String(format: "PID %d · %.1f%%", entry.pid, entry.cpuPercent))
+            lines.append("PID \(entry.pid) · \(resource.formattedValue(for: entry))")
         }
         if group.entries.count > 8 {
             lines.append("… and \(group.entries.count - 8) more")
         }
         return lines.joined(separator: "\n")
+    }
+}
+
+private extension ProcessMonitor.Resource {
+    var label: String {
+        switch self {
+        case .cpu: return "CPU"
+        case .memory: return "RAM"
+        }
+    }
+
+    func formattedValue(for group: ProcessMonitor.Group) -> String {
+        switch self {
+        case .cpu: return String(format: "%.1f%%", group.totalCpuPercent)
+        case .memory: return ByteFormatter.size(group.totalMemoryBytes)
+        }
+    }
+
+    func formattedValue(for entry: ProcessMonitor.Entry) -> String {
+        switch self {
+        case .cpu: return String(format: "%.1f%%", entry.cpuPercent)
+        case .memory: return ByteFormatter.size(entry.memoryBytes)
+        }
+    }
+
+    func accessibilityValue(for group: ProcessMonitor.Group) -> String {
+        switch self {
+        case .cpu:
+            return String(format: "%.1f percent CPU", group.totalCpuPercent)
+        case .memory:
+            return "\(ByteFormatter.size(group.totalMemoryBytes)) resident memory"
+        }
     }
 }
 

@@ -132,7 +132,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let processesRow = preferenceRow(
             symbol: "list.number",
             title: "Top Processes",
-            detail: "Number of processes shown inside the CPU card.",
+            detail: "Number of processes shown inside the CPU and Memory cards.",
             color: .systemOrange,
             control: topProcessSegment
         )

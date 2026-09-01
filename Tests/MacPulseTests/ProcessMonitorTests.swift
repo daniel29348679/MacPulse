@@ -5,6 +5,7 @@ enum ProcessMonitorTests {
     static let tests: [MacPulseTestCase] = [
         MacPulseTestCase("ProcessMonitor live sample includes own process", testLiveSampleIncludesOwnProcess),
         MacPulseTestCase("ProcessMonitor live sample measures busy process CPU", testLiveSampleMeasuresBusyProcessCPU),
+        MacPulseTestCase("ProcessMonitor force-kills a sampled child process", testForceKillsSampledChildProcess),
         MacPulseTestCase("ProcessMonitor displayName uses binary basename", testDisplayNameUsesBinaryBaseName),
         MacPulseTestCase("ProcessMonitor displayName keeps kernel names", testDisplayNameKeepsKernelStyleNames),
         MacPulseTestCase("ProcessMonitor displayName adds interpreter script", testDisplayNameAddsScriptForInterpreters),
@@ -16,16 +17,20 @@ enum ProcessMonitorTests {
         MacPulseTestCase("ProcessMonitor computeEntries treats PID reuse as new process", testComputeEntriesPIDReuseGivesZero),
         MacPulseTestCase("ProcessMonitor computeEntries applies limit", testComputeEntriesAppliesLimit),
         MacPulseTestCase("ProcessMonitor groupEntries aggregates same-name processes", testGroupEntriesAggregatesSameName),
+        MacPulseTestCase("ProcessMonitor groupEntries sorts and aggregates memory", testGroupEntriesSortsAndAggregatesMemory),
         MacPulseTestCase("ProcessMonitor groupEntries limits after aggregation", testGroupEntriesLimitsAfterAggregation),
         MacPulseTestCase("ProcessMonitor groupEntries breaks ties by name", testGroupEntriesBreaksTiesByName)
     ]
 
-    private static func entry(pid: Int32, name: String, cpu: Double) -> ProcessMonitor.Entry {
+    private static func entry(pid: Int32,
+                              name: String,
+                              cpu: Double,
+                              memory: UInt64 = 0) -> ProcessMonitor.Entry {
         let identity = ProcessMonitor.ProcessIdentity(startTimeSeconds: Int64(pid),
                                                       startTimeMicroseconds: 0,
                                                       uid: 501)
         return ProcessMonitor.Entry(pid: pid, name: name, command: "/bin/\(name)",
-                                    cpuPercent: cpu, identity: identity)
+                                    cpuPercent: cpu, memoryBytes: memory, identity: identity)
     }
 
     static func testLiveSampleIncludesOwnProcess() throws {
@@ -34,11 +39,19 @@ enum ProcessMonitorTests {
         // 命令列必須跟第一次一致；且至少要有讀得到 argv 的項目。
         let monitor = ProcessMonitor()
 
-        let first = monitor.sampleSync(limit: ProcessMonitor.hardLimit).flatMap(\.entries)
+        let firstSnapshot = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit)
+        let first = firstSnapshot.cpuGroups.flatMap(\.entries)
         try expect(!first.isEmpty, "live sample returned no processes")
         try expect(first.contains { !$0.command.isEmpty }, "no process had a readable command")
+        try expect(first.contains { $0.memoryBytes > 0 }, "no process had resident memory")
+        try expect(!firstSnapshot.memoryGroups.isEmpty, "live memory groups were empty")
+        for pair in zip(firstSnapshot.memoryGroups, firstSnapshot.memoryGroups.dropFirst()) {
+            try expect(pair.0.totalMemoryBytes >= pair.1.totalMemoryBytes,
+                       "memory groups were not sorted descending")
+        }
 
-        let second = monitor.sampleSync(limit: ProcessMonitor.hardLimit).flatMap(\.entries)
+        let second = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit)
+            .cpuGroups.flatMap(\.entries)
         try expect(!second.isEmpty, "second live sample returned no processes")
 
         var firstByPid: [Int32: ProcessMonitor.Entry] = [:]
@@ -69,6 +82,41 @@ enum ProcessMonitorTests {
         try expect(own != nil, "own busy process missing from sample")
         try expect((own?.cpuPercent ?? 0) > 1.0,
                    "busy process shows \(own?.cpuPercent ?? 0)% CPU — unit conversion regression?")
+    }
+
+    static func testForceKillsSampledChildProcess() throws {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/yes")
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        defer {
+            if child.isRunning {
+                child.terminate()
+                child.waitUntilExit()
+            }
+        }
+
+        let monitor = ProcessMonitor()
+        _ = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit)
+        Thread.sleep(forTimeInterval: 0.15)
+        let snapshot = monitor.sampleSnapshotSync(limit: ProcessMonitor.hardLimit)
+        let pid = child.processIdentifier
+        guard let entry = snapshot.cpuGroups.flatMap(\.entries).first(where: { $0.pid == pid }) else {
+            throw MacPulseTestFailure(message: "spawned child missing from process sample",
+                                      file: #filePath,
+                                      line: #line)
+        }
+
+        switch monitor.forceKill(entry) {
+        case .success: break
+        default:
+            throw MacPulseTestFailure(message: "force kill did not succeed",
+                                      file: #filePath,
+                                      line: #line)
+        }
+        child.waitUntilExit()
+        try expect(!child.isRunning, "force-killed child is still running")
     }
 
     static func testDisplayNameUsesBinaryBaseName() throws {
@@ -230,6 +278,22 @@ enum ProcessMonitorTests {
         try expectEqual(groups[0].entries.map(\.pid), [2, 3, 4])
         try expectEqual(groups[1].name, "big")
         try expectClose(groups[1].totalCpuPercent, 2.0)
+    }
+
+    static func testGroupEntriesSortsAndAggregatesMemory() throws {
+        let entries = [
+            entry(pid: 1, name: "CPU hog", cpu: 80, memory: 100),
+            entry(pid: 2, name: "helper", cpu: 1, memory: 250),
+            entry(pid: 3, name: "helper", cpu: 2, memory: 400)
+        ]
+        let groups = ProcessMonitor.groupEntries(entries, limit: 10, sortedBy: .memory)
+
+        try expectEqual(groups.count, 2)
+        try expectEqual(groups[0].name, "helper")
+        try expectEqual(groups[0].totalMemoryBytes, 650)
+        try expectEqual(groups[0].entries.map(\.pid), [3, 2])
+        try expectEqual(groups[1].name, "CPU hog")
+        try expectEqual(groups[1].totalMemoryBytes, 100)
     }
 
     static func testGroupEntriesLimitsAfterAggregation() throws {
