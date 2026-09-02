@@ -2,6 +2,9 @@ import AppKit
 import UniformTypeIdentifiers
 
 final class StatusBarController: NSObject {
+    static let cpuSymbolMarker = "\u{E000}"
+    static let memorySymbolMarker = "\u{E001}"
+
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private let popoverController = StatsPopoverController()
@@ -311,7 +314,7 @@ final class StatusBarController: NSObject {
         var topParts: [String] = []
         var accessibilityParts: [String] = []
         if visible.contains(.cpu), let s = lastCPU {
-            topParts.append("CPU \(Self.fixedWidthPercent(s.total))")
+            topParts.append("\(Self.cpuSymbolMarker) \(Self.fixedWidthPercent(s.total))")
             accessibilityParts.append(String(format: "CPU %.0f percent", s.total))
         }
         if visible.contains(.gpu), let s = lastGPU, let utilization = s.utilizationPercent {
@@ -319,7 +322,7 @@ final class StatusBarController: NSObject {
             accessibilityParts.append(String(format: "GPU %.0f percent", utilization))
         }
         if visible.contains(.memory), let s = lastMemory {
-            topParts.append("RAM \(Self.fixedWidthPercent(s.usagePercent))")
+            topParts.append("\(Self.memorySymbolMarker) \(Self.fixedWidthPercent(s.usagePercent))")
             accessibilityParts.append(String(format: "Memory %.0f percent", s.usagePercent))
         }
         if visible.contains(.temperature), let s = lastTemperature {
@@ -396,18 +399,13 @@ final class StatusBarController: NSObject {
 
         // Pure black + alpha so isTemplate = true lets the menu bar invert it
         // for dark mode / selection state automatically.
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.black
-        ]
-
         let lines: [NSAttributedString]
         if twoLines {
-            lines = [NSAttributedString(string: topLine, attributes: attrs),
-                     NSAttributedString(string: bottomLine, attributes: attrs)]
+            lines = [Self.attributedStatusLine(topLine, font: font),
+                     Self.attributedStatusLine(bottomLine, font: font)]
         } else {
             let single = topLine.isEmpty ? bottomLine : topLine
-            lines = [NSAttributedString(string: single, attributes: attrs)]
+            lines = [Self.attributedStatusLine(single, font: font)]
         }
 
         let widths = lines.map { $0.size().width }
@@ -434,6 +432,38 @@ final class StatusBarController: NSObject {
         // when the menu bar is in dark mode / selected.
         image.isTemplate = true
         return image
+    }
+
+    static func attributedStatusLine(_ value: String, font: NSFont) -> NSAttributedString {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.black
+        ]
+        let line = NSMutableAttributedString(string: value, attributes: attributes)
+        let symbols = [
+            (cpuSymbolMarker, "cpu", "CPU"),
+            (memorySymbolMarker, "memorychip", "RAM")
+        ]
+
+        for (marker, symbolName, fallback) in symbols {
+            let range = (line.string as NSString).range(of: marker)
+            guard range.location != NSNotFound else { continue }
+            guard let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: fallback)?
+                .withSymbolConfiguration(.init(pointSize: font.pointSize, weight: .medium)) else {
+                line.replaceCharacters(in: range,
+                                       with: NSAttributedString(string: fallback,
+                                                                attributes: attributes))
+                continue
+            }
+            let attachment = NSTextAttachment()
+            attachment.image = symbol
+            let replacement = NSMutableAttributedString(attachment: attachment)
+            replacement.addAttribute(.baselineOffset,
+                                     value: -1.0,
+                                     range: NSRange(location: 0, length: replacement.length))
+            line.replaceCharacters(in: range, with: replacement)
+        }
+        return line
     }
 
     static func fixedWidthPercent(_ value: Double) -> String {
