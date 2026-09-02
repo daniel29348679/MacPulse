@@ -69,6 +69,7 @@ private enum MacPulseTestRunner {
             ProcessMonitorTests.tests,
             ProcessNavigationStateTests.tests,
             ProcessPageTests.tests,
+            StatusBarFormattingTests.tests,
             SingleInstanceLockTests.tests,
             NetworkMonitorTests.tests,
             SettingsTests.tests

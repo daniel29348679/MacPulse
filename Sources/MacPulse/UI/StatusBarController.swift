@@ -311,15 +311,15 @@ final class StatusBarController: NSObject {
         var topParts: [String] = []
         var accessibilityParts: [String] = []
         if visible.contains(.cpu), let s = lastCPU {
-            topParts.append("CPU \(fixedWidthPercent(s.total))")
+            topParts.append("CPU \(Self.fixedWidthPercent(s.total))")
             accessibilityParts.append(String(format: "CPU %.0f percent", s.total))
         }
         if visible.contains(.gpu), let s = lastGPU, let utilization = s.utilizationPercent {
-            topParts.append("GPU \(fixedWidthPercent(utilization))")
+            topParts.append("GPU \(Self.fixedWidthPercent(utilization))")
             accessibilityParts.append(String(format: "GPU %.0f percent", utilization))
         }
         if visible.contains(.memory), let s = lastMemory {
-            topParts.append("RAM \(fixedWidthPercent(s.usagePercent))")
+            topParts.append("RAM \(Self.fixedWidthPercent(s.usagePercent))")
             accessibilityParts.append(String(format: "Memory %.0f percent", s.usagePercent))
         }
         if visible.contains(.temperature), let s = lastTemperature {
@@ -436,9 +436,9 @@ final class StatusBarController: NSObject {
         return image
     }
 
-    private func fixedWidthPercent(_ value: Double) -> String {
-        // Figure spaces have the same width as digits, so 9, 10, and 100 stay aligned.
-        String(format: "%3.0f", value)
+    static func fixedWidthPercent(_ value: Double) -> String {
+        // Keep the menu bar compact while figure spaces prevent single digits from shifting.
+        String(format: "%2.0f", min(value, 99))
             .replacingOccurrences(of: " ", with: "\u{2007}") + "%"
     }
 
