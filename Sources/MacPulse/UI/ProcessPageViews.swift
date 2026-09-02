@@ -157,18 +157,17 @@ private final class ProcessPageScrollView: NSScrollView {
     }
 }
 
-/// Task Manager-style table. Rows stay stable across samples while their live
-/// values update; clicking a column changes the sort order.
-final class ProcessTaskManagerPageView: ProcessPageView, ProcessPageUpdating {
+/// Task Manager-style table backed by NSTableView so only visible rows create
+/// views. A stack containing every PID causes Auto Layout to stall on busy Macs.
+final class ProcessTaskManagerPageView: ProcessPageView,
+                                        ProcessPageUpdating,
+                                        NSTableViewDataSource,
+                                        NSTableViewDelegate {
     private let statusLabel = ProcessPageViewFactory.captionLabel()
     private let emptyLabel = ProcessPageViewFactory.emptyLabel("Waiting for process data…")
-    private let rowsStack = ProcessPageViewFactory.verticalStack(spacing: 1)
-    private let scroll = ProcessPageScrollView(spacing: 7)
-    private var rowsCard: NSView!
-    private var headerButtons: [ProcessSortMetric: NSButton] = [:]
-    private var rowsByID: [ProcessEntryID: ProcessTableRowControl] = [:]
-    private var orderedIDs: [ProcessEntryID] = []
-    private var currentEntries: [ProcessMonitor.Entry] = []
+    private let tableView = NSTableView()
+    private let tableScroll = NSScrollView()
+    private var sortedEntries: [ProcessMonitor.Entry] = []
     private var sortMetric: ProcessSortMetric = .cpu
     private var ascending = false
 
@@ -177,43 +176,58 @@ final class ProcessTaskManagerPageView: ProcessPageView, ProcessPageUpdating {
     init(entries: [ProcessMonitor.Entry]) {
         super.init(title: "Processes")
 
-        let headerRow = NSStackView()
-        headerRow.orientation = .horizontal
-        headerRow.alignment = .centerY
-        headerRow.spacing = ProcessTableColumn.spacing
-
         for metric in ProcessSortMetric.allCases {
-            let button = NSButton(title: metric.label, target: self, action: #selector(changeSort(_:)))
-            button.tag = ProcessSortMetric.allCases.firstIndex(of: metric) ?? 0
-            button.isBordered = false
-            button.bezelStyle = .accessoryBarAction
-            button.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
-            button.contentTintColor = .secondaryLabelColor
-            button.alignment = metric == .name ? .left : .right
-            button.setAccessibilityHelp("Sort processes by \(metric.label)")
-            button.translatesAutoresizingMaskIntoConstraints = false
-            if let width = ProcessTableColumn.width(for: metric) {
-                button.widthAnchor.constraint(equalToConstant: width).isActive = true
-                button.setContentHuggingPriority(.required, for: .horizontal)
-            } else {
-                button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(metric.sortKey))
+            column.title = metric.label
+            column.headerCell.alignment = metric == .name ? .left : .right
+            column.sortDescriptorPrototype = NSSortDescriptor(
+                key: metric.sortKey,
+                ascending: metric == .name
+            )
+            switch metric {
+            case .name:
+                column.width = 120
+                column.minWidth = 88
+                column.resizingMask = .autoresizingMask
+            case .cpu:
+                column.width = 48
+                column.minWidth = 44
+                column.maxWidth = 58
+            case .memory:
+                column.width = 64
+                column.minWidth = 58
+                column.maxWidth = 76
+            case .disk:
+                column.width = 68
+                column.minWidth = 62
+                column.maxWidth = 82
             }
-            headerButtons[metric] = button
-            headerRow.addArrangedSubview(button)
+            tableView.addTableColumn(column)
         }
-        let chevronSpace = NSView()
-        chevronSpace.translatesAutoresizingMaskIntoConstraints = false
-        chevronSpace.widthAnchor.constraint(equalToConstant: ProcessTableColumn.chevronWidth).isActive = true
-        headerRow.addArrangedSubview(chevronSpace)
-        let headerCard = MacPulseVisualStyle.card(
-            around: headerRow,
-            insets: NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
-        )
 
-        rowsCard = MacPulseVisualStyle.card(
-            around: rowsStack,
-            insets: NSEdgeInsets(top: 5, left: 5, bottom: 5, right: 5)
-        )
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.rowHeight = 34
+        tableView.intercellSpacing = NSSize(width: 4, height: 1)
+        tableView.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        tableView.allowsColumnReordering = false
+        tableView.allowsColumnResizing = false
+        tableView.allowsMultipleSelection = false
+        tableView.usesAlternatingRowBackgroundColors = true
+        tableView.backgroundColor = .clear
+        tableView.gridStyleMask = []
+        tableView.style = .plain
+        tableView.setAccessibilityLabel("Processes table")
+        tableView.sortDescriptors = [NSSortDescriptor(key: ProcessSortMetric.cpu.sortKey,
+                                                      ascending: false)]
+
+        tableScroll.documentView = tableView
+        tableScroll.drawsBackground = false
+        tableScroll.borderType = .noBorder
+        tableScroll.hasVerticalScroller = true
+        tableScroll.autohidesScrollers = true
+        tableScroll.verticalScrollElasticity = .allowed
+        tableScroll.horizontalScrollElasticity = .none
 
         let note = NSTextField(wrappingLabelWithString:
             "Per-process GPU and network data isn’t available through public macOS APIs.")
@@ -223,89 +237,81 @@ final class ProcessTaskManagerPageView: ProcessPageView, ProcessPageUpdating {
         note.maximumNumberOfLines = 2
         note.setAccessibilityLabel(note.stringValue)
 
-        scroll.addFullWidthView(statusLabel)
-        scroll.addFullWidthView(headerCard)
-        scroll.addFullWidthView(rowsCard)
-        scroll.addFullWidthView(emptyLabel)
-        scroll.addFullWidthView(note)
-        installContent(scroll)
-        updateHeaderButtons()
+        let body = NSView()
+        for child in [statusLabel, tableScroll, emptyLabel, note] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            body.addSubview(child)
+        }
+        NSLayoutConstraint.activate([
+            statusLabel.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 12),
+            statusLabel.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -12),
+            statusLabel.topAnchor.constraint(equalTo: body.topAnchor, constant: 10),
+
+            tableScroll.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 8),
+            tableScroll.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -8),
+            tableScroll.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 7),
+            tableScroll.bottomAnchor.constraint(equalTo: note.topAnchor, constant: -7),
+
+            emptyLabel.centerXAnchor.constraint(equalTo: tableScroll.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: tableScroll.centerYAnchor),
+            emptyLabel.widthAnchor.constraint(lessThanOrEqualTo: tableScroll.widthAnchor, constant: -24),
+
+            note.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 12),
+            note.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -12),
+            note.bottomAnchor.constraint(equalTo: body.bottomAnchor, constant: -8)
+        ])
+        installContent(body)
         update(entries: entries)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func update(entries: [ProcessMonitor.Entry]) {
-        currentEntries = entries
         statusLabel.stringValue = "\(entries.count) processes · Updates live · Click a column to sort"
-
-        let currentByID = Dictionary(uniqueKeysWithValues: entries.map { (ProcessEntryID($0), $0) })
-        let stale = orderedIDs.filter { currentByID[$0] == nil }
-        let protectedStale = Set(stale.filter { rowsByID[$0]?.isInteractionActive == true })
-        for id in stale {
-            if protectedStale.contains(id) {
-                rowsByID[id]?.update(nil)
-            } else if let row = rowsByID.removeValue(forKey: id) {
-                rowsStack.removeArrangedSubview(row)
-                row.removeFromSuperview()
-            }
-        }
-        orderedIDs.removeAll { currentByID[$0] == nil && !protectedStale.contains($0) }
-
-        for entry in entries {
-            let id = ProcessEntryID(entry)
-            guard rowsByID[id] == nil else { continue }
-            let row = ProcessTableRowControl(entry: entry)
-            row.onClick = { [weak self] entry, anchor in
-                guard let self else { return }
-                self.onSelectEntry?(entry, self.sortMetric, anchor)
-            }
-            rowsByID[id] = row
-            rowsStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
-            orderedIDs.append(id)
-        }
-
-        for (id, row) in rowsByID {
-            row.update(currentByID[id])
-        }
-        reorderRowsIfPossible(protectedStale: protectedStale)
-        rowsCard.isHidden = orderedIDs.isEmpty
-        emptyLabel.isHidden = !orderedIDs.isEmpty
+        sortedEntries = sortMetric.sorted(entries, ascending: ascending)
+        tableView.reloadData()
+        emptyLabel.isHidden = !entries.isEmpty
     }
 
-    @objc private func changeSort(_ sender: NSButton) {
-        guard ProcessSortMetric.allCases.indices.contains(sender.tag) else { return }
-        let selected = ProcessSortMetric.allCases[sender.tag]
-        if selected == sortMetric {
-            ascending.toggle()
-        } else {
-            sortMetric = selected
-            ascending = selected == .name
-        }
-        updateHeaderButtons()
-        reorderRowsIfPossible(protectedStale: [])
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        sortedEntries.count
     }
 
-    private func updateHeaderButtons() {
-        for (metric, button) in headerButtons {
-            let active = metric == sortMetric
-            button.title = active ? "\(metric.label) \(ascending ? "↑" : "↓")" : metric.label
-            button.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
-            button.setAccessibilityValue(active ? (ascending ? "Ascending" : "Descending") : "Not sorted")
+    func tableView(_ tableView: NSTableView,
+                   viewFor tableColumn: NSTableColumn?,
+                   row: Int) -> NSView? {
+        guard sortedEntries.indices.contains(row), let tableColumn else { return nil }
+        let entry = sortedEntries[row]
+        let identifier = tableColumn.identifier
+        if identifier.rawValue == ProcessSortMetric.name.sortKey {
+            let view = tableView.makeView(withIdentifier: identifier, owner: self) as? ProcessNameCellView
+                ?? ProcessNameCellView(identifier: identifier)
+            view.update(entry)
+            return view
         }
+        let metric = ProcessSortMetric(sortKey: identifier.rawValue) ?? .cpu
+        let view = tableView.makeView(withIdentifier: identifier, owner: self) as? ProcessValueCellView
+            ?? ProcessValueCellView(identifier: identifier)
+        view.update(metric.formattedValue(for: entry), entry: entry, metric: metric)
+        return view
     }
 
-    private func reorderRowsIfPossible(protectedStale: Set<ProcessEntryID>) {
-        guard protectedStale.isEmpty,
-              !rowsByID.values.contains(where: { $0.isPointerInteractionActive }) else { return }
-        let desiredIDs = sortMetric.sorted(currentEntries, ascending: ascending).map(ProcessEntryID.init)
-        guard desiredIDs != orderedIDs else { return }
-        for row in rowsStack.arrangedSubviews { rowsStack.removeArrangedSubview(row) }
-        for id in desiredIDs {
-            if let row = rowsByID[id] { rowsStack.addArrangedSubview(row) }
-        }
-        orderedIDs = desiredIDs
+    func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+        guard let descriptor = tableView.sortDescriptors.first,
+              let key = descriptor.key,
+              let metric = ProcessSortMetric(sortKey: key) else { return }
+        sortMetric = metric
+        ascending = descriptor.ascending
+        sortedEntries = metric.sorted(sortedEntries, ascending: ascending)
+        tableView.reloadData()
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let row = tableView.selectedRow
+        guard sortedEntries.indices.contains(row) else { return }
+        let entry = sortedEntries[row]
+        tableView.deselectRow(row)
+        onSelectEntry?(entry, sortMetric, tableView)
     }
 }
 
@@ -472,51 +478,13 @@ final class ProcessEntryPageView: ProcessPageView, ProcessPageUpdating {
     }
 }
 
-private enum ProcessTableColumn {
-    static let spacing: CGFloat = 5
-    static let chevronWidth: CGFloat = 8
-
-    static func width(for metric: ProcessSortMetric) -> CGFloat? {
-        switch metric {
-        case .name: return nil
-        case .cpu: return 42
-        case .memory: return 58
-        case .disk: return 62
-        }
-    }
-}
-
-final class ProcessTableRowControl: NSButton {
+private final class ProcessNameCellView: NSTableCellView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let pidLabel = NSTextField(labelWithString: "")
-    private let cpuLabel = ProcessPageViewFactory.tableValueLabel()
-    private let memoryLabel = ProcessPageViewFactory.tableValueLabel()
-    private let diskLabel = ProcessPageViewFactory.tableValueLabel()
-    private let chevron = NSImageView()
-    private var trackingArea: NSTrackingArea?
-    private var isPointerInside = false
-    private var entry: ProcessMonitor.Entry?
-    private let fallbackEntry: ProcessMonitor.Entry
 
-    var onClick: ((ProcessMonitor.Entry, NSView) -> Void)?
-    var isInteractionActive: Bool { isPointerInside || window?.firstResponder === self }
-    var isPointerInteractionActive: Bool { isPointerInside }
-
-    init(entry: ProcessMonitor.Entry) {
-        fallbackEntry = entry
-        self.entry = entry
+    init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
-        title = ""
-        isBordered = false
-        target = self
-        action = #selector(pressed)
-        translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        layer?.cornerRadius = 8
-        if #available(macOS 10.15, *) { layer?.cornerCurve = .continuous }
-        focusRingType = .exterior
-        setAccessibilityRole(.button)
-        setAccessibilityHelp("Show process details")
+        self.identifier = identifier
 
         nameLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         nameLabel.textColor = .labelColor
@@ -524,102 +492,56 @@ final class ProcessTableRowControl: NSButton {
         nameLabel.cell?.usesSingleLineMode = true
         pidLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .regular)
         pidLabel.textColor = .tertiaryLabelColor
-        let nameStack = ProcessPageViewFactory.verticalStack(spacing: 0)
-        nameStack.addArrangedSubview(nameLabel)
-        nameStack.addArrangedSubview(pidLabel)
-        nameStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        nameStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        if let image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil) {
-            chevron.image = image.withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
-        }
-        chevron.contentTintColor = .tertiaryLabelColor
-        chevron.translatesAutoresizingMaskIntoConstraints = false
-        chevron.widthAnchor.constraint(equalToConstant: ProcessTableColumn.chevronWidth).isActive = true
-
-        let row = NSStackView(views: [nameStack, cpuLabel, memoryLabel, diskLabel, chevron])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = ProcessTableColumn.spacing
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-
-        for pair in [(cpuLabel, ProcessSortMetric.cpu),
-                     (memoryLabel, ProcessSortMetric.memory),
-                     (diskLabel, ProcessSortMetric.disk)] {
-            pair.0.widthAnchor.constraint(equalToConstant: ProcessTableColumn.width(for: pair.1) ?? 0).isActive = true
+        for label in [nameLabel, pidLabel] {
+            label.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(label)
         }
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 36),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            row.centerYAnchor.constraint(equalTo: centerYAnchor)
+            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            nameLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            pidLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+            pidLabel.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
+            pidLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor),
+            pidLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -2)
         ])
-        update(entry)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override var acceptsFirstResponder: Bool { true }
-    override var focusRingMaskBounds: NSRect { bounds.insetBy(dx: 2, dy: 2) }
-    override func drawFocusRingMask() {
-        NSBezierPath(roundedRect: focusRingMaskBounds, xRadius: 7, yRadius: 7).fill()
+    func update(_ entry: ProcessMonitor.Entry) {
+        nameLabel.stringValue = entry.name
+        pidLabel.stringValue = "PID \(entry.pid)"
+        toolTip = entry.command
+        setAccessibilityLabel("\(entry.name), PID \(entry.pid)")
+    }
+}
+
+private final class ProcessValueCellView: NSTableCellView {
+    private let valueLabel = ProcessPageViewFactory.tableValueLabel()
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(valueLabel)
+        NSLayoutConstraint.activate([
+            valueLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
     }
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(rect: bounds,
-                                  options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                  owner: self)
-        addTrackingArea(area)
-        trackingArea = area
-    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isEnabled, super.hitTest(point) != nil else { return nil }
-        return self
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        isPointerInside = true
-        guard entry != nil else { return }
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        isPointerInside = false
-        layer?.backgroundColor = nil
-    }
-
-    func update(_ entry: ProcessMonitor.Entry?) {
-        self.entry = entry
-        nameLabel.stringValue = entry?.name ?? fallbackEntry.name
-        pidLabel.stringValue = "PID \(fallbackEntry.pid)"
-        if let entry {
-            isEnabled = true
-            cpuLabel.stringValue = String(format: "%.1f%%", entry.cpuPercent)
-            memoryLabel.stringValue = ByteFormatter.size(entry.memoryBytes)
-            diskLabel.stringValue = ByteFormatter.rate(entry.diskBytesPerSecond)
-            chevron.isHidden = false
-            toolTip = entry.command
-            setAccessibilityLabel("\(entry.name), PID \(entry.pid)")
-            setAccessibilityValue("\(cpuLabel.stringValue) CPU, \(memoryLabel.stringValue) RAM, \(diskLabel.stringValue) disk I/O")
-        } else {
-            isEnabled = false
-            cpuLabel.stringValue = "—"
-            memoryLabel.stringValue = "—"
-            diskLabel.stringValue = "—"
-            chevron.isHidden = true
-            toolTip = "Process is no longer running"
-            setAccessibilityLabel("\(fallbackEntry.name), PID \(fallbackEntry.pid), unavailable")
-            setAccessibilityValue(nil)
-        }
-    }
-
-    @objc private func pressed() {
-        guard let entry else { return }
-        onClick?(entry, self)
+    func update(_ value: String,
+                entry: ProcessMonitor.Entry,
+                metric: ProcessSortMetric) {
+        valueLabel.stringValue = value
+        setAccessibilityLabel(metric.label)
+        setAccessibilityValue(value)
+        toolTip = "\(entry.name) · \(metric.label) \(value)"
     }
 }
 
@@ -699,6 +621,25 @@ private final class ProcessPageDocumentView: NSView {
 }
 
 private extension ProcessSortMetric {
+    var sortKey: String {
+        switch self {
+        case .name: return "name"
+        case .cpu: return "cpu"
+        case .memory: return "memory"
+        case .disk: return "disk"
+        }
+    }
+
+    init?(sortKey: String) {
+        switch sortKey {
+        case "name": self = .name
+        case "cpu": self = .cpu
+        case "memory": self = .memory
+        case "disk": self = .disk
+        default: return nil
+        }
+    }
+
     var symbolName: String {
         switch self {
         case .name: return "list.bullet"
