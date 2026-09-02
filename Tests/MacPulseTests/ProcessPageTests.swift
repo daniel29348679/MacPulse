@@ -3,7 +3,8 @@ import AppKit
 
 enum ProcessPageTests {
     static let tests: [MacPulseTestCase] = [
-        MacPulseTestCase("Process page handles a thousand rows with a reusable table", testLargeProcessTable)
+        MacPulseTestCase("Process page handles a thousand rows with a reusable table", testLargeProcessTable),
+        MacPulseTestCase("Process navigation expands and restores the popover", testProcessPageSize)
     ]
 
     static func testLargeProcessTable() throws {
@@ -41,10 +42,39 @@ enum ProcessPageTests {
         try expectEqual(firstNameCell?.toolTip, "/usr/bin/process-1000")
     }
 
-    private static func firstSubview<T: NSView>(of type: T.Type, in root: NSView) -> T? {
-        if let match = root as? T { return match }
+    static func testProcessPageSize() throws {
+        let controller = StatsPopoverController()
+        let root = controller.view
+
+        guard let processesButton = firstSubview(of: NSButton.self,
+                                                 in: root,
+                                                 matching: { $0.toolTip == "View all processes" }) else {
+            throw MacPulseTestFailure(message: "process navigation button was not found",
+                                      file: #filePath,
+                                      line: #line)
+        }
+        processesButton.performClick(nil)
+        try expectEqual(controller.preferredContentSize.width,
+                        MacPulseVisualStyle.processPopoverWidth)
+
+        guard let processPage = firstSubview(of: ProcessPageView.self, in: root) else {
+            throw MacPulseTestFailure(message: "process page was not found",
+                                      file: #filePath,
+                                      line: #line)
+        }
+        processPage.cancelOperation(nil)
+        try expectEqual(controller.preferredContentSize.width,
+                        MacPulseVisualStyle.popoverWidth)
+    }
+
+    private static func firstSubview<T: NSView>(of type: T.Type,
+                                                in root: NSView,
+                                                matching predicate: (T) -> Bool = { _ in true }) -> T? {
+        if let match = root as? T, predicate(match) { return match }
         for child in root.subviews {
-            if let match: T = firstSubview(of: type, in: child) { return match }
+            if let match: T = firstSubview(of: type, in: child, matching: predicate) {
+                return match
+            }
         }
         return nil
     }

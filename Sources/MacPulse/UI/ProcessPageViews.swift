@@ -190,7 +190,7 @@ final class ProcessTaskManagerPageView: ProcessPageView,
                 column.minWidth = 88
                 column.resizingMask = .autoresizingMask
             case .cpu:
-                column.width = 48
+                column.width = 56
                 column.minWidth = 44
                 column.maxWidth = 58
             case .memory:

@@ -2,6 +2,8 @@ import AppKit
 
 enum MacPulseVisualStyle {
     static let popoverWidth: CGFloat = 324
+    static let processPopoverWidth: CGFloat = 520
+    static let processPopoverHeight: CGFloat = 560
     static let cardCornerRadius: CGFloat = 16
     static let cardInsets = NSEdgeInsets(top: 13, left: 14, bottom: 13, right: 14)
 

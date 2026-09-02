@@ -408,6 +408,7 @@ final class StatsPopoverController: NSViewController {
               processNavigation.push(route) else { return }
 
         let source = processPageControllers.last ?? overviewPageController
+        adjustProcessPreferredSize()
         destination.view.frame = source.view.frame
         destination.view.autoresizingMask = [.width, .height]
         addChild(destination)
@@ -495,7 +496,7 @@ final class StatsPopoverController: NSViewController {
                 return
             }
             if self.processNavigation.isAtOverview {
-                self.adjustPreferredSize(preservingVisibleSize: true)
+                self.adjustPreferredSize()
             }
             if let window = destination.view.window,
                let returnFocus,
@@ -608,16 +609,21 @@ final class StatsPopoverController: NSViewController {
         adjustPreferredSize()
     }
 
-    private func adjustPreferredSize(preservingVisibleSize: Bool = false) {
+    private func adjustPreferredSize() {
         rootStack.layoutSubtreeIfNeeded()
         let contentHeight = max(rootStack.fittingSize.height, 80)
         let cappedHeight = min(contentHeight, maximumPopoverHeight())
-        let visibleHeight = preferredContentSize.height > 0 ? preferredContentSize.height : cappedHeight
-        scrollView.hasVerticalScroller = contentHeight > visibleHeight + 1
+        scrollView.hasVerticalScroller = contentHeight > cappedHeight + 1
         guard processNavigation.isAtOverview else { return }
-        if preservingVisibleSize, isViewLoaded, view.window?.isVisible == true { return }
         preferredContentSize = NSSize(width: MacPulseVisualStyle.popoverWidth,
                                       height: cappedHeight)
+    }
+
+    private func adjustProcessPreferredSize() {
+        preferredContentSize = NSSize(
+            width: MacPulseVisualStyle.processPopoverWidth,
+            height: min(MacPulseVisualStyle.processPopoverHeight, maximumPopoverHeight())
+        )
     }
 
     func prepareForDisplay(on screen: NSScreen?) {
