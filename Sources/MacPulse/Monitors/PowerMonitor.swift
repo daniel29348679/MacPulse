@@ -2,12 +2,11 @@ import Foundation
 import IOKit
 import IOKit.ps
 
-/// Reads battery power flow from `AppleSmartBattery` in IORegistry.
+/// Reads external input and battery discharge from `AppleSmartBattery` in IORegistry.
 ///
-/// `Voltage` is in millivolts, `Amperage` is in milliamps and signed
-/// (positive = charging on most Macs, negative = discharging — but sign
-/// conventions vary per generation, so we always report `|V * I|` and
-/// rely on `IsCharging` / `ExternalConnected` to label the direction).
+/// On external power, `PowerDistribution.IPDInputPower` reports input power
+/// in milliwatts. On battery, `Voltage` is in millivolts and `Amperage` in
+/// milliamps; their product gives battery discharge in microwatts.
 ///
 /// 充電百分比走 `IOPSCopyPowerSourcesInfo`（IOPS）：它對外保證
 /// `kIOPSCurrentCapacityKey` / `kIOPSMaxCapacityKey` 一律是 0–100 規範化值，
@@ -29,7 +28,7 @@ final class PowerMonitor {
 
     struct Sample {
         let state: State
-        /// Always non-negative. nil when no battery is available.
+        /// External input on AC; battery discharge when unplugged. Nil if unavailable.
         let watts: Double?
         /// Battery charge level, 0–100. nil when no battery.
         let percent: Int?
@@ -53,26 +52,28 @@ final class PowerMonitor {
             return Sample(state: .unavailable, watts: nil, percent: percent)
         }
 
-        let voltageMV = dict["Voltage"] as? Int
-        let amperageMA = dict["Amperage"] as? Int
         let isCharging = (dict["IsCharging"] as? Bool) ?? false
         let externalConnected = (dict["ExternalConnected"] as? Bool) ?? false
-
-        guard let voltageMV, let amperageMA else {
-            return Sample(state: externalConnected ? .ac : .unavailable, watts: nil, percent: percent)
+        if externalConnected {
+            return Sample(state: isCharging ? .charging : .ac,
+                          watts: Self.externalInputWatts(in: dict),
+                          percent: percent)
         }
 
-        // mV * mA = µW → divide by 1e6 for W. abs() because sign convention
-        // differs across Mac generations and we display direction via state.
+        guard let voltageMV = dict["Voltage"] as? Int,
+              let amperageMA = dict["Amperage"] as? Int else {
+            return Sample(state: .unavailable, watts: nil, percent: percent)
+        }
+        // mV * mA = µW; the sign convention varies by Mac generation.
         let watts = abs(Double(voltageMV) * Double(amperageMA)) / 1_000_000.0
+        return Sample(state: .discharging, watts: watts, percent: percent)
+    }
 
-        let state: State = {
-            if isCharging { return .charging }
-            if externalConnected { return .ac }
-            return .discharging
-        }()
-
-        return Sample(state: state, watts: watts, percent: percent)
+    static func externalInputWatts(in properties: [String: Any]) -> Double? {
+        guard let distribution = properties["PowerDistribution"] as? [String: Any],
+              let milliwatts = distribution["IPDInputPower"] as? Int,
+              milliwatts > 0 else { return nil }
+        return Double(milliwatts) / 1_000.0
     }
 
     /// 從 IOPSCopyPowerSourcesInfo 取得內建電池的 0–100 百分比；桌機無電池回 nil。

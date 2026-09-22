@@ -334,15 +334,22 @@ final class StatusBarController: NSObject {
                 accessibilityParts.append("Thermal pressure \(s.level.label)")
             }
         }
-        if visible.contains(.power), let s = lastPower, let watts = s.watts {
+        if visible.contains(.power), let s = lastPower {
             switch s.state {
-            case .charging:
-                topParts.append(String(format: "↑%.0fW", watts))
-                accessibilityParts.append(String(format: "Charging %.0f watts", watts))
+            case .charging, .ac:
+                if let watts = s.watts {
+                    topParts.append(String(format: "↑%.0fW", watts))
+                    accessibilityParts.append(String(format: "External input %.0f watts", watts))
+                } else {
+                    topParts.append("↑—W")
+                    accessibilityParts.append("External input unavailable")
+                }
             case .discharging:
-                topParts.append(String(format: "↓%.0fW", watts))
-                accessibilityParts.append(String(format: "Discharging %.0f watts", watts))
-            case .ac, .unavailable: break
+                if let watts = s.watts {
+                    topParts.append(String(format: "↓%.0fW", watts))
+                    accessibilityParts.append(String(format: "Discharging %.0f watts", watts))
+                }
+            case .unavailable: break
             }
         }
 
@@ -692,7 +699,13 @@ final class StatusBarController: NSObject {
 
         let watts = powerSample.watts.map { String(format: "%.1f W", $0) } ?? "n/a"
         let percent = powerSample.percent.map { "\($0)%" } ?? "n/a"
-        lines.append("Power: \(powerSample.state.diagnosticsLabel), \(watts), battery \(percent)")
+        let powerKind: String
+        switch powerSample.state {
+        case .charging, .ac: powerKind = "external input"
+        case .discharging: powerKind = "battery discharge"
+        case .unavailable: powerKind = "unavailable"
+        }
+        lines.append("Power: \(powerSample.state.diagnosticsLabel), \(powerKind) \(watts), battery \(percent)")
 
         return lines.joined(separator: "\n") + "\n"
     }

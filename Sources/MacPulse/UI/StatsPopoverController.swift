@@ -98,6 +98,7 @@ final class StatsPopoverController: NSViewController {
     private let tempDot = ColorDotView()
 
     // Power
+    private let powerTitle = NSTextField(labelWithString: "External Input")
     private let powerLabel = StatsPopoverController.makeValueLabel()
     private let powerBreakdown = StatsPopoverController.makeSecondaryLabel()
 
@@ -285,7 +286,7 @@ final class StatsPopoverController: NSViewController {
         sections[.temperature] = tempCard
 
         // Power
-        let powerHeader = compactHeaderRow(metric: .power)
+        let powerHeader = compactHeaderRow(metric: .power, titleLabel: powerTitle)
         let powerSection = stack([powerHeader, powerLabel, powerBreakdown], spacing: 5)
         powerHeader.widthAnchor.constraint(equalTo: powerSection.widthAnchor).isActive = true
         let powerCard = popoverCard(around: powerSection)
@@ -733,16 +734,20 @@ final class StatsPopoverController: NSViewController {
 
         if let power {
             switch power.state {
-            case .charging:
-                powerLabel.stringValue = String(format: "↑ %.1f W", power.watts ?? 0)
-                powerBreakdown.stringValue = "charging" + (power.percent.map { " · \($0)%" } ?? "")
+            case .charging, .ac:
+                powerTitle.stringValue = "External Input"
+                powerTitle.setAccessibilityLabel("External Input")
+                powerLabel.stringValue = power.watts.map { String(format: "↑ %.1f W", $0) } ?? "—"
+                powerBreakdown.stringValue = (power.watts == nil ? "external input unavailable" : "external input")
+                    + (power.percent.map { " · \($0)%" } ?? "")
             case .discharging:
+                powerTitle.stringValue = "Battery Power"
+                powerTitle.setAccessibilityLabel("Battery Power")
                 powerLabel.stringValue = String(format: "↓ %.1f W", power.watts ?? 0)
                 powerBreakdown.stringValue = "on battery" + (power.percent.map { " · \($0)%" } ?? "")
-            case .ac:
-                powerLabel.stringValue = "AC"
-                powerBreakdown.stringValue = "plugged in" + (power.percent.map { " · \($0)%" } ?? "")
             case .unavailable:
+                powerTitle.stringValue = "Power"
+                powerTitle.setAccessibilityLabel("Power")
                 powerLabel.stringValue = "—"
                 powerBreakdown.stringValue = "no battery"
             }
@@ -780,7 +785,8 @@ final class StatsPopoverController: NSViewController {
         return row
     }
 
-    private func compactHeaderRow(metric: Metric) -> NSStackView {
+    private func compactHeaderRow(metric: Metric,
+                                  titleLabel: NSTextField? = nil) -> NSStackView {
         let icon = MacPulseVisualStyle.symbolBadge(
             metric.symbolName,
             color: MacPulseVisualStyle.accentColor(for: metric),
@@ -789,11 +795,11 @@ final class StatsPopoverController: NSViewController {
         )
         icon.toolTip = metric.displayName
 
-        let title = NSTextField(labelWithString: metric.displayName)
+        let title = titleLabel ?? NSTextField(labelWithString: metric.displayName)
         title.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
         title.textColor = .labelColor
         title.lineBreakMode = .byTruncatingTail
-        title.setAccessibilityLabel(metric.displayName)
+        title.setAccessibilityLabel(title.stringValue)
 
         let row = NSStackView(views: [icon, title, NSView()])
         row.orientation = .horizontal

@@ -87,7 +87,7 @@ enum Screenshots {
         try writePNG(view: view, to: directory.appendingPathComponent("popover.png"))
 
         // Render a charging variant too, so the README can show both states.
-        let powerCharging = PowerMonitor.Sample(state: .charging, watts: 38.7, percent: 62)
+        let powerCharging = PowerMonitor.Sample(state: .charging, watts: 89.2, percent: 62)
         popover.update(cpu: cpu, gpu: gpu, memory: memory, network: network,
                        disk: disk, temperature: temp, power: powerCharging)
         popover.prepareForDisplay(on: NSScreen.main)
