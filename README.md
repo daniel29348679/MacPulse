@@ -101,7 +101,7 @@ The first build takes ~30s; after that startup is instant.
 | Network     | `getifaddrs()` + `if_data` — diff of `ifi_ibytes` / `ifi_obytes` between samples       |
 | Disk        | IOKit `IOBlockStorageDriver.Statistics` — diff of `Bytes (Read)` / `Bytes (Write)`     |
 | Temperature | `IOHIDEventSystemClient` — enumerate `kHIDPage_AppleVendor / TemperatureSensor` services |
-| Power       | IOKit `AppleSmartBattery` registry entry — external input from `PowerDistribution.IPDInputPower` on AC; battery discharge from `Voltage × Amperage` when unplugged |
+| Power       | IOKit `AppleSmartBattery` registry entry — external input from `PowerTelemetryData.SystemPowerIn` on AC; battery discharge from `Voltage × Amperage` when unplugged |
 | Processes   | `libproc` task and rusage info — per-PID CPU time, resident memory, and disk I/O                  |
 
 > **About the temperature reading.** Apple does not expose CPU °C through any public API.
@@ -115,9 +115,10 @@ The first build takes ~30s; after that startup is instant.
 >
 > Run `MacPulse.app/Contents/MacOS/MacPulse --dump-sensors` to print every readable sensor.
 
-> **About power.** When plugged in, MacPulse shows the external input power reported by the
-> power controller (which can reflect the negotiated input limit, not wall-meter draw).
-> If that reading is unavailable, the section shows `—` rather than battery charging power.
+> **About power.** When plugged in, MacPulse shows the power controller's measured
+> system input, not the charger's negotiated wattage limit. The telemetry may update
+> only about once a minute and can differ from an external meter at the wall.
+> If that reading is unavailable, the section shows `—` rather than an estimated value.
 > On battery, it shows discharge power computed from `Voltage × Amperage`; the sign of
 > `Amperage` differs across Mac generations. Desktop Macs without a battery show `—`.
 

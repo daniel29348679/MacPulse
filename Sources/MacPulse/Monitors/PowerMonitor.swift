@@ -4,8 +4,8 @@ import IOKit.ps
 
 /// Reads external input and battery discharge from `AppleSmartBattery` in IORegistry.
 ///
-/// On external power, `PowerDistribution.IPDInputPower` reports input power
-/// in milliwatts. On battery, `Voltage` is in millivolts and `Amperage` in
+/// On external power, `PowerTelemetryData.SystemPowerIn` reports measured
+/// input power in milliwatts. On battery, `Voltage` is in millivolts and `Amperage` in
 /// milliamps; their product gives battery discharge in microwatts.
 ///
 /// 充電百分比走 `IOPSCopyPowerSourcesInfo`（IOPS）：它對外保證
@@ -70,8 +70,8 @@ final class PowerMonitor {
     }
 
     static func externalInputWatts(in properties: [String: Any]) -> Double? {
-        guard let distribution = properties["PowerDistribution"] as? [String: Any],
-              let milliwatts = distribution["IPDInputPower"] as? Int,
+        guard let telemetry = properties["PowerTelemetryData"] as? [String: Any],
+              let milliwatts = telemetry["SystemPowerIn"] as? Int,
               milliwatts > 0 else { return nil }
         return Double(milliwatts) / 1_000.0
     }

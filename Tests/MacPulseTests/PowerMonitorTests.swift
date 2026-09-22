@@ -7,12 +7,13 @@ enum PowerMonitorTests {
 
     static func testExternalInput() throws {
         let properties: [String: Any] = [
+            "PowerTelemetryData": ["SystemPowerIn": 7_184],
             "PowerDistribution": ["IPDInputPower": 89_200],
             "Voltage": 12_449,
             "Amperage": 5_474
         ]
-        try expectEqual(PowerMonitor.externalInputWatts(in: properties), 89.2)
-        try expectEqual(PowerMonitor.externalInputWatts(in: ["Voltage": 12_449, "Amperage": 5_474]), nil)
-        try expectEqual(PowerMonitor.externalInputWatts(in: ["PowerDistribution": ["IPDInputPower": 0]]), nil)
+        try expectEqual(PowerMonitor.externalInputWatts(in: properties), 7.184)
+        try expectEqual(PowerMonitor.externalInputWatts(in: ["PowerDistribution": ["IPDInputPower": 89_200]]), nil)
+        try expectEqual(PowerMonitor.externalInputWatts(in: ["PowerTelemetryData": ["SystemPowerIn": 0]]), nil)
     }
 }
